@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+figure_viewer_launcher.log
+figure_viewer_error.log
+PROJECT_NOTES.md

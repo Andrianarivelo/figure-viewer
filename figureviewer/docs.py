@@ -1,0 +1,672 @@
+"""Document model, folder scanning and caching.
+
+Design goals
+------------
+1. **Never lock a file.** Every document is loaded from an in-memory copy of
+   the bytes, so a plotting script can overwrite a figure while it is on screen.
+2. **Never rasterise more than the screen needs.** Both document types can
+   render an arbitrary *region* at an arbitrary *scale*, so zooming to 800 % on
+   a 12000 x 8000 px figure costs the same as viewing it at 100 %.
+3. **Never block the UI thread.** Scanning, decoding and thumbnailing all run
+   on a small worker pool; results are delivered through a queue.
+
+Two document kinds are implemented behind one interface:
+
+``RasterDocument``  PNG / JPEG / TIFF / BMP / GIF / WebP, including multi-page
+                    TIFFs and animated GIFs (each frame is a page).
+``VectorDocument``  PDF (and, when PyMuPDF is present, SVG / EPS / XPS / CBZ).
+                    Pages are re-rasterised at the exact zoom level, so text
+                    and lines stay razor sharp at any magnification.
+"""
+from __future__ import annotations
+
+import os
+import queue
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable, Optional
+
+from PIL import Image, ImageOps
+
+# Pillow's guard against decompression-bomb attacks trips on legitimate
+# high-resolution scientific figures; raise it rather than disable it.
+Image.MAX_IMAGE_PIXELS = 512_000_000
+
+try:  # PyMuPDF is optional: the app still runs (images only) without it.
+    try:
+        import pymupdf as fitz  # type: ignore   # modern module name (>= 1.24)
+    except ImportError:
+        import fitz  # type: ignore              # legacy alias
+
+    HAVE_FITZ = True
+    FITZ_ERROR = ""
+except Exception as exc:  # pragma: no cover - depends on the environment
+    fitz = None  # type: ignore
+    HAVE_FITZ = False
+    FITZ_ERROR = str(exc)
+
+
+RASTER_SUFFIXES = {
+    ".png", ".jpg", ".jpeg", ".jpe", ".tif", ".tiff", ".bmp", ".gif",
+    ".webp", ".ppm", ".pgm", ".jp2", ".ico",
+}
+#: Vector / paged formats, only usable when PyMuPDF is importable.
+VECTOR_SUFFIXES = {".pdf", ".svg", ".eps", ".xps", ".oxps", ".cbz", ".epub"}
+
+KIND_IMAGE = "image"
+KIND_DOC = "doc"
+
+#: Filter modes offered by the toolbar's segmented switch.
+FILTER_IMAGES = "images"
+FILTER_DOCS = "docs"
+FILTER_ALL = "all"
+
+
+def suffix_kind(suffix: str) -> Optional[str]:
+    """Return ``KIND_IMAGE`` / ``KIND_DOC`` for a file suffix, else ``None``."""
+    low = suffix.lower()
+    if low in RASTER_SUFFIXES:
+        return KIND_IMAGE
+    if low in VECTOR_SUFFIXES and HAVE_FITZ:
+        return KIND_DOC
+    if low == ".pdf":
+        return KIND_DOC          # listed even without a renderer, so the user
+    return None                  # gets a helpful message instead of silence
+
+
+def kinds_for_filter(mode: str) -> set[str]:
+    """Map a toolbar filter mode to the set of document kinds to show."""
+    if mode == FILTER_IMAGES:
+        return {KIND_IMAGE}
+    if mode == FILTER_DOCS:
+        return {KIND_DOC}
+    return {KIND_IMAGE, KIND_DOC}
+
+
+@dataclass(frozen=True)
+class Entry:
+    """Immutable metadata for one file on disk."""
+
+    path: Path
+    size: int
+    mtime: float
+    kind: str
+
+    @property
+    def name(self) -> str:
+        return self.path.name
+
+    @property
+    def stamp(self) -> tuple[int, float]:
+        """Change token: a new value means the bytes on disk changed."""
+        return (self.size, self.mtime)
+
+    @property
+    def key(self) -> tuple[str, int, float]:
+        """Cache key that is invalidated automatically when the file changes."""
+        return (str(self.path), self.size, self.mtime)
+
+
+def natural_key(text: str) -> tuple:
+    """Sort key placing ``Figure2`` before ``Figure10``."""
+    parts: list = []
+    chunk = ""
+    is_digit = False
+    for ch in text:
+        if ch.isdigit() != is_digit and chunk:
+            parts.append((1, int(chunk), "") if is_digit else (0, 0, chunk.lower()))
+            chunk = ""
+        chunk += ch
+        is_digit = ch.isdigit()
+    if chunk:
+        parts.append((1, int(chunk), "") if is_digit else (0, 0, chunk.lower()))
+    return tuple(parts)
+
+
+SORT_KEYS: dict[str, Callable[[Entry], object]] = {
+    "name": lambda e: natural_key(e.name),
+    "modified": lambda e: e.mtime,
+    "size": lambda e: e.size,
+    "kind": lambda e: (e.kind, natural_key(e.name)),
+}
+
+
+def scan_folder(folder: Path, *, kinds: set[str], recursive: bool = False,
+                sort_by: str = "name", descending: bool = False) -> list[Entry]:
+    """List supported files in ``folder``.
+
+    Uses :func:`os.scandir`, whose ``DirEntry.stat()`` is served from the
+    directory enumeration on Windows: roughly an order of magnitude fewer
+    syscalls than ``Path.iterdir()`` + ``Path.stat()``, which matters a lot on
+    network drives.
+    """
+    entries: list[Entry] = []
+    stack = [folder]
+    seen_dirs: set[str] = set()
+    while stack:
+        current = stack.pop()
+        try:
+            real = os.path.realpath(current)
+            if real in seen_dirs:       # guard against symlink loops
+                continue
+            seen_dirs.add(real)
+            with os.scandir(current) as it:
+                for item in it:
+                    try:
+                        if item.is_dir(follow_symlinks=False):
+                            if recursive and not item.name.startswith("."):
+                                stack.append(Path(item.path))
+                            continue
+                        if not item.is_file(follow_symlinks=False):
+                            continue
+                        kind = suffix_kind(os.path.splitext(item.name)[1])
+                        if kind is None or kind not in kinds:
+                            continue
+                        stat = item.stat()
+                        entries.append(Entry(Path(item.path), stat.st_size,
+                                             stat.st_mtime, kind))
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    entries.sort(key=SORT_KEYS.get(sort_by, SORT_KEYS["name"]), reverse=descending)
+    return entries
+
+
+def format_size(num_bytes: int) -> str:
+    """Compact human-readable byte count."""
+    value = float(num_bytes)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if value < 1024 or unit == "TB":
+            return f"{int(value)} B" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{num_bytes} B"
+
+
+def format_time(stamp: float) -> str:
+    """Local timestamp, short form."""
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stamp))
+
+
+def _normalise(image: Image.Image) -> Image.Image:
+    """Convert exotic modes into something Tk and the clipboard can handle."""
+    mode = image.mode
+    if mode in ("P", "PA"):
+        return image.convert("RGBA")
+    if mode == "CMYK":
+        return image.convert("RGB")
+    if mode in ("I", "I;16", "I;16B", "I;16L", "F"):
+        # Scientific 16/32-bit data: stretch to 8-bit for display.
+        return ImageOps.autocontrast(image.convert("F").convert("L"))
+    if mode == "1":
+        return image.convert("L")
+    return image
+
+
+def _resample_region(image: Image.Image, box: tuple[float, float, float, float],
+                     out_size: tuple[int, int], fast: bool) -> Image.Image:
+    """Crop ``box`` from ``image`` and scale it to ``out_size``.
+
+    ``Image.resize(..., box=...)`` fuses the crop and the scale into a single
+    pass, so only the requested region is ever touched. For heavy reductions a
+    :meth:`Image.reduce` pre-pass (integer box filter, very fast) removes most
+    of the pixels before the expensive filter runs.
+    """
+    left = max(0.0, min(box[0], image.width))
+    top = max(0.0, min(box[1], image.height))
+    right = max(left + 1e-6, min(box[2], image.width))
+    bottom = max(top + 1e-6, min(box[3], image.height))
+    out_w = max(1, int(out_size[0]))
+    out_h = max(1, int(out_size[1]))
+
+    src_w = right - left
+    src_h = bottom - top
+    ratio = min(src_w / out_w, src_h / out_h)
+
+    work = image
+    if ratio >= 3.0:
+        factor = max(1, min(int(ratio), 16))
+        int_box = (int(left), int(top), max(int(left) + factor, int(right)),
+                   max(int(top) + factor, int(bottom)))
+        int_box = (int_box[0], int_box[1],
+                   min(int_box[2], image.width), min(int_box[3], image.height))
+        try:
+            work = image.reduce(factor, box=int_box)
+            left = (left - int_box[0]) / factor
+            top = (top - int_box[1]) / factor
+            right = left + src_w / factor
+            bottom = top + src_h / factor
+        except ValueError:
+            work = image
+
+    if fast:
+        resample = Image.Resampling.BILINEAR
+    else:
+        resample = (Image.Resampling.LANCZOS
+                    if (right - left) > out_w else Image.Resampling.BICUBIC)
+    return work.resize((out_w, out_h), resample,
+                       box=(left, top, min(right, work.width), min(bottom, work.height)))
+
+
+class Document:
+    """Base interface shared by raster images and paged vector documents."""
+
+    kind = KIND_IMAGE
+
+    def __init__(self, entry: Entry) -> None:
+        self.entry = entry
+        self.page_count = 1
+        self.info: dict[str, str] = {}
+
+    # -- geometry ---------------------------------------------------------
+    def page_size(self, page: int) -> tuple[int, int]:
+        """Logical pixel size of a page at 100 % zoom."""
+        raise NotImplementedError
+
+    # -- rendering --------------------------------------------------------
+    def render_region(self, page: int, box: tuple[float, float, float, float],
+                      out_size: tuple[int, int], *, fast: bool = False) -> Image.Image:
+        """Rasterise ``box`` (in page pixels at 100 %) into ``out_size`` pixels."""
+        raise NotImplementedError
+
+    def full_page(self, page: int, *, quality_scale: float = 1.0) -> Image.Image:
+        """Return a whole page as a PIL image at ``quality_scale`` x 100 %."""
+        width, height = self.page_size(page)
+        out = (max(1, int(width * quality_scale)), max(1, int(height * quality_scale)))
+        return self.render_region(page, (0, 0, width, height), out, fast=False)
+
+    def pixel(self, page: int, x: int, y: int) -> Optional[tuple[int, ...]]:
+        """Colour sample at a page pixel, or ``None`` if not available."""
+        return None
+
+    def text(self, page: int) -> str:
+        """Extracted page text, empty for raster images."""
+        return ""
+
+    def close(self) -> None:
+        """Release any native resources."""
+
+
+class RasterDocument(Document):
+    """A bitmap image; multi-frame files expose one page per frame."""
+
+    kind = KIND_IMAGE
+
+    def __init__(self, entry: Entry, data: bytes) -> None:
+        super().__init__(entry)
+        import io as _io
+
+        self._buffer = _io.BytesIO(data)      # kept alive; the file is not
+        self._image = Image.open(self._buffer)  # locked because we own the bytes
+        self.page_count = max(1, getattr(self._image, "n_frames", 1))
+        self._frames: dict[int, Image.Image] = {}
+        self._lock = threading.Lock()
+
+        base = self._image
+        self.info = {
+            "Format": str(base.format or "?"),
+            "Mode": base.mode,
+            "Size": f"{base.width} x {base.height} px",
+            "Pages": str(self.page_count),
+        }
+        dpi = base.info.get("dpi")
+        if dpi:
+            try:
+                self.info["DPI"] = f"{float(dpi[0]):.0f} x {float(dpi[1]):.0f}"
+            except Exception:
+                pass
+        # matplotlib and friends store provenance in PNG text chunks.
+        for key in ("Software", "Title", "Author", "Description", "Comment",
+                    "parameters", "Creation Time"):
+            value = base.info.get(key)
+            if isinstance(value, (str, bytes)) and value:
+                text = value.decode("utf-8", "replace") if isinstance(value, bytes) else value
+                self.info[key] = text[:400]
+
+    @property
+    def dpi(self) -> Optional[tuple[float, float]]:
+        """Source DPI if the file declares one."""
+        value = self._image.info.get("dpi")
+        if value:
+            try:
+                return (float(value[0]), float(value[1]))
+            except Exception:
+                return None
+        return None
+
+    def frame(self, page: int) -> Image.Image:
+        """Return a decoded, normalised frame, caching the result."""
+        index = max(0, min(page, self.page_count - 1))
+        with self._lock:
+            cached = self._frames.get(index)
+            if cached is not None:
+                return cached
+            if self.page_count > 1:
+                self._image.seek(index)
+            frame = _normalise(self._image.copy() if self.page_count > 1 else self._image)
+            frame.load()
+            self._frames[index] = frame
+            return frame
+
+    def page_size(self, page: int) -> tuple[int, int]:
+        image = self.frame(page)
+        return image.width, image.height
+
+    def render_region(self, page: int, box, out_size, *, fast: bool = False) -> Image.Image:
+        return _resample_region(self.frame(page), box, out_size, fast)
+
+    def full_page(self, page: int, *, quality_scale: float = 1.0) -> Image.Image:
+        image = self.frame(page)
+        if abs(quality_scale - 1.0) < 1e-9:
+            return image                     # no copy, no resample: instant
+        return super().full_page(page, quality_scale=quality_scale)
+
+    def pixel(self, page: int, x: int, y: int):
+        image = self.frame(page)
+        if 0 <= x < image.width and 0 <= y < image.height:
+            try:
+                value = image.getpixel((x, y))
+                return value if isinstance(value, tuple) else (value,)
+            except Exception:
+                return None
+        return None
+
+    def close(self) -> None:
+        try:
+            self._image.close()
+        except Exception:
+            pass
+        self._frames.clear()
+
+
+class VectorDocument(Document):
+    """A PDF (or other PyMuPDF-supported format) rendered on demand.
+
+    ``base_dpi`` defines what "100 %" means: the page is treated as a bitmap of
+    ``points * base_dpi / 72`` pixels. Rendering always happens at the exact
+    requested zoom, so the output is resolution independent.
+    """
+
+    kind = KIND_DOC
+
+    def __init__(self, entry: Entry, data: bytes, base_dpi: float = 150.0) -> None:
+        super().__init__(entry)
+        if not HAVE_FITZ:
+            raise RuntimeError(
+                "PDF support requires PyMuPDF.\n\nInstall it with:\n"
+                "    pip install pymupdf"
+            )
+        self.base_dpi = base_dpi
+        self._doc = fitz.open(stream=data, filetype=entry.path.suffix.lstrip("."))
+        self.page_count = max(1, self._doc.page_count)
+        self._lock = threading.Lock()
+        # Last rasterisation, rendered with a margin around the requested box.
+        # Panning inside that margin is then a pure crop instead of a
+        # re-rasterisation, which is the difference between 100 ms and 1 ms.
+        self._tile: Optional[dict] = None
+        meta = self._doc.metadata or {}
+        self.info = {
+            "Format": (meta.get("format") or entry.path.suffix.upper().lstrip(".")),
+            "Pages": str(self.page_count),
+            "Render DPI": f"{base_dpi:.0f}",
+        }
+        for key in ("title", "author", "subject", "creator", "producer", "creationDate"):
+            value = meta.get(key)
+            if value:
+                self.info[key.capitalize()] = str(value)[:400]
+
+    @property
+    def dpi(self) -> Optional[tuple[float, float]]:
+        return (self.base_dpi, self.base_dpi)
+
+    def _page(self, page: int):
+        return self._doc.load_page(max(0, min(page, self.page_count - 1)))
+
+    def page_size(self, page: int) -> tuple[int, int]:
+        rect = self._page(page).rect
+        factor = self.base_dpi / 72.0
+        return max(1, int(round(rect.width * factor))), max(1, int(round(rect.height * factor)))
+
+    def render_region(self, page: int, box, out_size, *, fast: bool = False) -> Image.Image:
+        out_w = max(1, int(out_size[0]))
+        out_h = max(1, int(out_size[1]))
+        width, height = self.page_size(page)
+        left = max(0.0, min(box[0], width))
+        top = max(0.0, min(box[1], height))
+        right = max(left + 1.0, min(box[2], width))
+        bottom = max(top + 1.0, min(box[3], height))
+        scale = out_w / (right - left)
+
+        cached = self._crop_from_tile(page, (left, top, right, bottom), (out_w, out_h), scale)
+        if cached is not None:
+            return cached
+
+        # Rasterise with a margin so the next pan is served from the cache. The
+        # margin is snapped to a whole number of output pixels, which keeps
+        # later crops pixel-aligned and therefore perfectly sharp.
+        margin_x = max(0.0, min((right - left) * 0.30, left)) if left > 0 else 0.0
+        margin_y = max(0.0, min((bottom - top) * 0.30, top)) if top > 0 else 0.0
+        margin_x = round(margin_x * scale) / scale
+        margin_y = round(margin_y * scale) / scale
+        p_left = max(0.0, left - margin_x)
+        p_top = max(0.0, top - margin_y)
+        p_right = min(float(width), right + (right - left) * 0.30)
+        p_bottom = min(float(height), bottom + (bottom - top) * 0.30)
+
+        factor = self.base_dpi / 72.0
+        clip = fitz.Rect(p_left / factor, p_top / factor, p_right / factor, p_bottom / factor)
+        matrix = fitz.Matrix(scale * factor, scale * factor)
+        with self._lock:
+            pix = self._page(page).get_pixmap(
+                matrix=matrix, clip=clip, alpha=False,
+                colorspace=fitz.csRGB, annots=True,
+            )
+        image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+        if image.width * image.height <= 24_000_000:   # ~72 MB RGB, keep it bounded
+            self._tile = {"page": page, "scale": image.width / max(p_right - p_left, 1e-6),
+                          "box": (p_left, p_top, p_right, p_bottom), "image": image}
+        result = self._crop_from_tile(page, (left, top, right, bottom), (out_w, out_h), scale)
+        if result is not None:
+            return result
+        return image.resize((out_w, out_h), Image.Resampling.BILINEAR)
+
+    def _crop_from_tile(self, page: int, box, out_size, scale: float) -> Optional[Image.Image]:
+        """Serve a request from the padded cache when it is covered by it."""
+        tile = self._tile
+        # A 1 % shortfall in resolution is invisible and avoids cache misses
+        # caused purely by rounding the output size to whole pixels.
+        if tile is None or tile["page"] != page or tile["scale"] < scale * 0.99:
+            return None
+        left, top, right, bottom = box
+        t_left, t_top, t_right, t_bottom = tile["box"]
+        if left < t_left - 0.5 or top < t_top - 0.5 or right > t_right + 0.5 or bottom > t_bottom + 0.5:
+            return None
+        factor = tile["scale"]
+        crop = ((left - t_left) * factor, (top - t_top) * factor,
+                (right - t_left) * factor, (bottom - t_top) * factor)
+        image = tile["image"]
+        crop = (max(0.0, crop[0]), max(0.0, crop[1]),
+                min(float(image.width), crop[2]), min(float(image.height), crop[3]))
+        resample = (Image.Resampling.LANCZOS if factor > scale * 1.02
+                    else Image.Resampling.BILINEAR)
+        return image.resize(out_size, resample, box=crop)
+
+    def text(self, page: int) -> str:
+        try:
+            with self._lock:
+                return self._page(page).get_text("text")
+        except Exception:
+            return ""
+
+    def close(self) -> None:
+        try:
+            self._doc.close()
+        except Exception:
+            pass
+
+
+def load_document(entry: Entry, *, pdf_dpi: float = 150.0) -> Document:
+    """Read a file into memory and wrap it in the right document class."""
+    data = entry.path.read_bytes()
+    if entry.kind == KIND_DOC:
+        return VectorDocument(entry, data, base_dpi=pdf_dpi)
+    return RasterDocument(entry, data)
+
+
+class DocumentCache:
+    """Tiny LRU cache of open documents keyed by path *and* file stamp.
+
+    Because the key includes size and mtime, an overwritten figure is never
+    served from the cache: hot reload is automatic and free.
+    """
+
+    def __init__(self, max_items: int = 6) -> None:
+        self.max_items = max_items
+        self._items: dict[tuple, Document] = {}
+        self._order: list[tuple] = []
+        self._lock = threading.Lock()
+
+    def get(self, entry: Entry, *, pdf_dpi: float = 150.0) -> Document:
+        key = entry.key + (pdf_dpi if entry.kind == KIND_DOC else 0,)
+        with self._lock:
+            document = self._items.get(key)
+            if document is not None:
+                self._order.remove(key)
+                self._order.append(key)
+                return document
+        document = load_document(entry, pdf_dpi=pdf_dpi)
+        evicted: list[Document] = []
+        with self._lock:
+            if key not in self._items:
+                self._items[key] = document
+                self._order.append(key)
+                while len(self._order) > self.max_items:
+                    old = self._order.pop(0)
+                    stale = self._items.pop(old, None)
+                    if stale is not None:
+                        evicted.append(stale)
+            else:
+                evicted.append(document)
+                document = self._items[key]
+        for stale in evicted:
+            stale.close()
+        return document
+
+    def peek(self, entry: Entry, *, pdf_dpi: float = 150.0) -> Optional[Document]:
+        """Return an already-loaded document without touching the disk."""
+        key = entry.key + (pdf_dpi if entry.kind == KIND_DOC else 0,)
+        with self._lock:
+            return self._items.get(key)
+
+    def clear(self) -> None:
+        with self._lock:
+            documents = list(self._items.values())
+            self._items.clear()
+            self._order.clear()
+        for document in documents:
+            document.close()
+
+
+def make_thumbnail(document: Document, size: int) -> Image.Image:
+    """Render a square-bounded thumbnail of page 0."""
+    width, height = document.page_size(0)
+    scale = min(size / max(width, 1), size / max(height, 1), 1.0)
+    out = (max(1, int(width * scale)), max(1, int(height * scale)))
+    image = document.render_region(0, (0, 0, width, height), out, fast=False)
+    return image.convert("RGB") if image.mode not in ("RGB", "RGBA") else image
+
+
+def thumbnail_for(entry: Entry, size: int) -> Image.Image:
+    """Build a thumbnail without polluting the document cache.
+
+    JPEGs use :meth:`Image.draft`, which lets libjpeg decode at 1/2, 1/4 or 1/8
+    scale directly - typically 5-10x faster than a full decode. PDFs are
+    rendered at a low DPI for the same reason.
+    """
+    if entry.kind == KIND_DOC:
+        document = load_document(entry, pdf_dpi=72.0)
+        try:
+            return make_thumbnail(document, size)
+        finally:
+            document.close()
+
+    import io as _io
+
+    data = entry.path.read_bytes()
+    with Image.open(_io.BytesIO(data)) as image:
+        try:
+            image.draft("RGB", (size * 2, size * 2))
+        except Exception:
+            pass
+        frame = _normalise(image)
+        frame.thumbnail((size, size), Image.Resampling.BILINEAR, reducing_gap=2.0)
+        return frame.copy()
+
+
+class Worker:
+    """A small thread pool whose results are delivered on the Tk main loop.
+
+    Tk is not thread safe, so background threads never touch widgets. They push
+    ``(callback, result, error)`` tuples onto a queue that the UI drains from a
+    periodic ``after`` tick.
+    """
+
+    def __init__(self, root, max_workers: int = 3, poll_ms: int = 25) -> None:
+        self.root = root
+        self.poll_ms = poll_ms
+        self._pool = ThreadPoolExecutor(max_workers=max_workers,
+                                        thread_name_prefix="fv-worker")
+        self._queue: "queue.Queue[tuple]" = queue.Queue()
+        self._alive = True
+        self.root.after(self.poll_ms, self._drain)
+
+    def submit(self, job: Callable[[], object], done: Callable[[object], None],
+               failed: Optional[Callable[[BaseException], None]] = None) -> None:
+        """Run ``job`` off-thread and call ``done`` (or ``failed``) on the UI thread."""
+        if not self._alive:
+            return
+
+        def run() -> None:
+            try:
+                result = job()
+            except BaseException as exc:  # noqa: BLE001 - forwarded to the UI
+                self._queue.put((failed, exc, True))
+            else:
+                self._queue.put((done, result, False))
+
+        self._pool.submit(run)
+
+    def _drain(self) -> None:
+        """Deliver finished jobs; always reschedules itself.
+
+        A callback that raises must never break the delivery loop, otherwise
+        the whole app would silently stop receiving background results.
+        """
+        import traceback
+
+        deadline = time.perf_counter() + 0.008   # keep the UI thread responsive
+        try:
+            while time.perf_counter() < deadline:
+                try:
+                    callback, payload, is_error = self._queue.get_nowait()
+                except queue.Empty:
+                    break
+                if callback is None:
+                    continue
+                try:
+                    callback(payload)
+                except Exception:
+                    traceback.print_exc()
+        finally:
+            if self._alive:
+                try:
+                    self.root.after(self.poll_ms, self._drain)
+                except Exception:
+                    self._alive = False
+
+    def shutdown(self) -> None:
+        self._alive = False
+        self._pool.shutdown(wait=False, cancel_futures=True)
