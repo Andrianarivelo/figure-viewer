@@ -42,7 +42,8 @@ from PIL import Image, ImageOps, ImageTk
 from . import APP_NAME, APP_VERSION
 from . import docs as D
 from . import winclip
-from .theme import MenuBar, Palette, bind_tooltip, style_menu, toolbar_button
+from .theme import (DENSITIES, MenuBar, Palette, bind_tooltip, configure_list_density,
+                    style_menu, toolbar_button)
 
 ZOOM_MIN = 0.02
 ZOOM_MAX = 32.0
@@ -152,7 +153,13 @@ class ViewerWindow(tk.Toplevel):
         self._snip_start: Optional[tuple[float, float]] = None
         self._snip_rect: Optional[tuple[float, float, float, float]] = None
         self.last_snip: Optional[Image.Image] = None
-        self._scan_busy = False
+        # Folder listings are produced off-thread, so results can come back out
+        # of order. Every scan takes a sequence number and a result older than
+        # the last one applied is dropped.
+        self._list_seq = 0
+        self._list_applied = 0
+        self._rescan_pending = 0
+        self._watch_inflight = False
         self._destroyed = False
         self._suppress_select = False
         self._probe_text = ""
@@ -178,7 +185,8 @@ class ViewerWindow(tk.Toplevel):
         self.invert = tk.BooleanVar(value=False)
         self.grayscale = tk.BooleanVar(value=False)
         self.transparency = tk.StringVar(value=settings.get("transparency", "white"))
-        self.thumb_size = tk.IntVar(value=int(settings.get("thumb_size", 40)))
+        self.thumb_size = tk.IntVar(value=int(settings.get("thumb_size", 24)))
+        self.density = tk.StringVar(value=settings.get("density", "compact"))
         self.pdf_dpi = tk.DoubleVar(value=float(settings.get("pdf_dpi", 150.0)))
         self.export_dpi = tk.DoubleVar(value=float(settings.get("export_dpi", 300.0)))
         self.slideshow_secs = tk.DoubleVar(value=float(settings.get("slideshow_secs", 4.0)))
@@ -464,10 +472,18 @@ class ViewerWindow(tk.Toplevel):
         view_menu.add_checkbutton(label="Overview Map", variable=self.show_minimap, command=self.redraw_now)
         thumbs = tk.Menu(view_menu)
         style_menu(thumbs, p)
-        for label, value in (("Off", 0), ("Small", 28), ("Medium", 40), ("Large", 64)):
+        for label, value in (("Off", 0), ("Tiny", 16), ("Small", 24),
+                             ("Medium", 36), ("Large", 56)):
             thumbs.add_radiobutton(label=label, value=value, variable=self.thumb_size,
                                    command=self._thumb_size_changed)
         view_menu.add_cascade(label="Thumbnails", menu=thumbs)
+        density = tk.Menu(view_menu)
+        style_menu(density, p)
+        for label, value in (("Compact", "compact"), ("Normal", "normal"),
+                             ("Comfortable", "comfortable")):
+            density.add_radiobutton(label=label, value=value, variable=self.density,
+                                    command=self._thumb_size_changed)
+        view_menu.add_cascade(label="List Density", menu=density)
         view_menu.add_separator()
         view_menu.add_command(label="Toggle Theme", accelerator="Ctrl+T", command=self.app.toggle_theme)
         view_menu.add_command(label="Full Screen", accelerator="F11", command=self.toggle_fullscreen)
@@ -711,9 +727,11 @@ class ViewerWindow(tk.Toplevel):
     # ------------------------------------------------------------- scanning
     def rescan(self, *, keep_selection: bool = True) -> None:
         """Rescan the folder on a worker thread and refresh the file list."""
-        if self._destroyed or self._scan_busy:
+        if self._destroyed:
             return
-        self._scan_busy = True
+        self._list_seq += 1
+        sequence = self._list_seq
+        self._rescan_pending += 1
         folder = self.folder
         kinds = D.kinds_for_filter(self.kind_filter.get())
         recursive = self.recursive.get()
@@ -726,9 +744,10 @@ class ViewerWindow(tk.Toplevel):
                                  sort_by=sort_by, descending=descending)
 
         def done(entries):
-            self._scan_busy = False
-            if self._destroyed or folder != self.folder:
+            self._rescan_pending = max(0, self._rescan_pending - 1)
+            if self._destroyed or folder != self.folder or sequence < self._list_applied:
                 return
+            self._list_applied = sequence
             self.entries = entries
             self.app.settings.update({
                 "filter": self.kind_filter.get(), "sort_by": sort_by,
@@ -737,7 +756,7 @@ class ViewerWindow(tk.Toplevel):
             self._apply_filter(select_path=keep)
 
         def failed(exc):
-            self._scan_busy = False
+            self._rescan_pending = max(0, self._rescan_pending - 1)
             self.status_var.set(f"Scan failed: {exc}")
 
         self.app.worker.submit(job, done, failed)
@@ -857,9 +876,11 @@ class ViewerWindow(tk.Toplevel):
 
     # ---------------------------------------------------------- thumbnails
     def _thumb_size_changed(self) -> None:
+        """Re-lay the file list after a thumbnail size or density change."""
         size = self.thumb_size.get()
         self.app.settings["thumb_size"] = size
-        ttk.Style(self).configure("Treeview", rowheight=max(22, size + 6) if size else 22)
+        self.app.settings["density"] = self.density.get()
+        configure_list_density(self, size, self.density.get())
         self._thumb_photos.clear()
         self._thumb_keys.clear()
         self._displayed = []          # force a rebuild so old icons disappear
@@ -1871,20 +1892,28 @@ class ViewerWindow(tk.Toplevel):
         """Poll the folder off-thread; refresh only when something changed."""
         if self._destroyed:
             return
-        if not self._scan_busy and self.winfo_viewable():
+        # Skip while a scan is already in flight: piling requests up would let
+        # an older listing overwrite a newer one, and a minimised window has
+        # nothing to refresh.
+        if self._rescan_pending == 0 and not self._watch_inflight and self.winfo_viewable():
             folder = self.folder
             kinds = D.kinds_for_filter(self.kind_filter.get())
             recursive = self.recursive.get()
             sort_by = self.sort_by.get()
             descending = self.sort_desc.get()
+            self._list_seq += 1
+            sequence = self._list_seq
+            self._watch_inflight = True
 
             def job():
                 return D.scan_folder(folder, kinds=kinds, recursive=recursive,
                                      sort_by=sort_by, descending=descending)
 
             def done(entries):
-                if self._destroyed or folder != self.folder:
+                self._watch_inflight = False
+                if self._destroyed or folder != self.folder or sequence < self._list_applied:
                     return
+                self._list_applied = sequence
                 if [e.path for e in entries] != [e.path for e in self.entries]:
                     # Files appeared, vanished or were reordered: full refresh.
                     self.entries = entries
@@ -1904,7 +1933,10 @@ class ViewerWindow(tk.Toplevel):
                     if fresh is not None and fresh.stamp != self.current.stamp:
                         self.load(fresh, keep_view=True, note="Reloaded")
 
-            self.app.worker.submit(job, done, lambda _e: None)
+            def failed(_exc):
+                self._watch_inflight = False
+
+            self.app.worker.submit(job, done, failed)
         self._watch_job = self.after(WATCH_MS, self._watch)
 
     # ------------------------------------------------------------ read-outs

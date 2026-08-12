@@ -73,7 +73,9 @@ high-quality pass once the gesture stops.
 
 ### Nicer to look at and to use
 Dark and light themes (`Ctrl+T`), DPI-aware fonts, drop shadow and optional
-checkerboard behind transparent PNGs, thumbnails in the file list, an overview
+checkerboard behind transparent PNGs, thumbnails in the file list (five sizes,
+`View > Thumbnails`, plus `View > List Density` for compact / normal /
+comfortable rows), an overview
 map when zoomed in (click it to jump), a live cursor read-out showing image
 coordinates and the pixel colour under the pointer, a details panel with file
 and PNG-metadata fields, tooltips everywhere, and toast feedback in the status

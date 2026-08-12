@@ -143,6 +143,29 @@ def configure_fonts(root: tk.Misc, scale: float = 1.0) -> dict[str, tkfont.Font]
     return fonts
 
 
+#: Row spacing presets for the file list: (extra pixels around a thumbnail,
+#: font, row height when thumbnails are off).
+DENSITIES: dict[str, tuple[int, str, int]] = {
+    "compact": (2, "FVsmall", 17),
+    "normal": (6, "FVui", 22),
+    "comfortable": (12, "FVui", 28),
+}
+
+
+def configure_list_density(root: tk.Misc, thumb_size: int, density: str = "compact") -> None:
+    """Size the file-list rows from the thumbnail size and the density preset.
+
+    ``rowheight`` is a style option rather than a widget option in ttk, so this
+    has to go through :class:`ttk.Style` and applies to every Treeview in the
+    interpreter - which is what we want, since all of them are file lists.
+    """
+    padding, font, bare = DENSITIES.get(density, DENSITIES["compact"])
+    height = (thumb_size + padding) if thumb_size else bare
+    style = ttk.Style(root)
+    style.configure("Treeview", rowheight=max(15, height), font=font)
+    style.configure("Treeview.Item", padding=(0, 0))
+
+
 def apply_theme(root: tk.Misc, palette: Palette) -> None:
     """Restyle every ttk widget class used by the app.
 

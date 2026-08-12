@@ -23,7 +23,8 @@ from typing import Optional
 
 from . import APP_NAME
 from . import docs as D
-from .theme import PALETTES, Palette, apply_theme, configure_fonts, enable_dpi_awareness
+from .theme import (PALETTES, Palette, apply_theme, configure_fonts,
+                    configure_list_density, enable_dpi_awareness)
 
 APP_DIR = Path(__file__).resolve().parent.parent
 SETTINGS_DIR = Path.home() / "AppData" / "Roaming" / "FigureViewerApp"
@@ -44,7 +45,8 @@ DEFAULT_SETTINGS: dict = {
     "show_minimap": True,
     "smooth": True,
     "transparency": "white",
-    "thumb_size": 40,
+    "thumb_size": 24,
+    "density": "compact",
     "pdf_dpi": 150.0,
     "export_dpi": 300.0,
     "slideshow_secs": 4.0,
@@ -113,10 +115,8 @@ class App:
 
     def _apply_row_height(self) -> None:
         """Keep the file-list row height in step with the thumbnail size."""
-        from tkinter import ttk
-
-        size = int(self.settings.get("thumb_size", 40))
-        ttk.Style(self.root).configure("Treeview", rowheight=max(22, size + 6) if size else 22)
+        configure_list_density(self.root, int(self.settings.get("thumb_size", 24)),
+                               self.settings.get("density", "compact"))
 
     def next_geometry(self) -> str:
         """Geometry for a new window, cascaded so windows do not stack exactly."""
