@@ -3,7 +3,7 @@
 Keeps the historical file name so the desktop shortcut, the .bat launcher and
 any script that calls::
 
-    pythonw.exe D:\\FigureViewerApp\\figure_viewer_app.py "<folder or file>"
+    pythonw.exe <app folder>\\figure_viewer_app.py "<folder or file>"
 
 keeps working. All of the implementation lives in the ``figureviewer`` package
 next to this file.

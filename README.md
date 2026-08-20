@@ -13,12 +13,32 @@ zoom, your pan or your place in the list.
 - Pass a folder **or a file** as the first argument:
 
 ```powershell
-pythonw.exe D:\FigureViewerApp\figure_viewer_app.py "I:\processedData\mPFC-NAc\group\1\figures\v3_n6"
-pythonw.exe D:\FigureViewerApp\figure_viewer_app.py "C:\some\report.pdf"
+pythonw.exe D:\Apps\figure-viewer\figure_viewer_app.py "E:\group\1\figures\v3_n6"
+pythonw.exe D:\Apps\figure-viewer\figure_viewer_app.py "C:\some\report.pdf"
 ```
 
 Startup failures are written to `figure_viewer_error.log` and shown in a dialog,
 so nothing fails silently under `pythonw.exe`.
+
+### After moving the app folder
+
+Windows shortcuts store absolute paths, so a moved folder leaves them pointing
+at a directory that no longer exists. Clicking one then does nothing at all: no
+window, no error, because `pythonw.exe` has no console to complain to.
+
+Re-create them from the new location:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File D:\Apps\figure-viewer\install_shortcuts.ps1
+```
+
+Every path that script writes is derived from its own location, so running it
+from the folder you moved to is the entire fix. Add `-Folder <path>` to also get
+a shortcut that opens straight into one figure directory.
+
+The interpreter is chosen at install time by probing candidates for Pillow and
+tkinter, rather than being hardcoded. Override it with the
+`FIGURE_VIEWER_PYTHON` environment variable if you need a specific one.
 
 ### Requirements
 
