@@ -88,16 +88,47 @@ def kinds_for_filter(mode: str) -> set[str]:
 
 @dataclass(frozen=True)
 class Entry:
-    """Immutable metadata for one file on disk."""
+    """Immutable metadata for one file on disk.
+
+    ``root`` is the folder the scan started from. It is what lets a recursive
+    listing show ``run3/figures/psth.png`` instead of three indistinguishable
+    ``psth.png`` rows, and what makes files group by sub-folder when sorted.
+    """
 
     path: Path
     size: int
     mtime: float
     kind: str
+    root: Optional[Path] = None
 
     @property
     def name(self) -> str:
         return self.path.name
+
+    @property
+    def relname(self) -> str:
+        """Path relative to the scan root, e.g. ``run3/figures/psth.png``.
+
+        Falls back to the bare file name when the entry has no root, or when
+        the file somehow sits outside it (a junction pointing elsewhere).
+        """
+        if self.root is None:
+            return self.path.name
+        try:
+            return str(self.path.relative_to(self.root))
+        except ValueError:
+            return self.path.name
+
+    @property
+    def subfolder(self) -> str:
+        """The directory part of :attr:`relname`; empty for top-level files."""
+        return os.path.dirname(self.relname)
+
+    @property
+    def depth(self) -> int:
+        """0 for a file directly in the scan root, 1 one level down, and so on."""
+        head = self.subfolder
+        return 0 if not head else head.count(os.sep) + 1
 
     @property
     def stamp(self) -> tuple[int, float]:
@@ -126,54 +157,126 @@ def natural_key(text: str) -> tuple:
     return tuple(parts)
 
 
+def folder_key(entry: Entry) -> tuple:
+    """Sort key for an entry's sub-folder, one natural key per path segment.
+
+    Top-level files get an empty tuple, so they always sort before the
+    sub-folders underneath them, and every sub-folder's files stay contiguous
+    instead of being interleaved by file name across the whole tree.
+    """
+    head = entry.subfolder
+    if not head:
+        return ()
+    return tuple(natural_key(part) for part in head.split(os.sep))
+
+
+#: Sort modes offered by Tools > Sort By. ``name`` and ``kind`` are
+#: folder-aware so that a multi-level scan reads like a directory tree;
+#: ``modified`` and ``size`` deliberately ignore the folder, because "the ten
+#: newest figures anywhere under here" is exactly why one sorts by date.
 SORT_KEYS: dict[str, Callable[[Entry], object]] = {
-    "name": lambda e: natural_key(e.name),
+    "name": lambda e: (folder_key(e), natural_key(e.name)),
     "modified": lambda e: e.mtime,
     "size": lambda e: e.size,
-    "kind": lambda e: (e.kind, natural_key(e.name)),
+    "kind": lambda e: (e.kind, folder_key(e), natural_key(e.name)),
 }
 
 
-def scan_folder(folder: Path, *, kinds: set[str], recursive: bool = False,
-                sort_by: str = "name", descending: bool = False) -> list[Entry]:
-    """List supported files in ``folder``.
+#: Directories never worth walking into during a recursive scan. Skipping them
+#: is not cosmetic: ``node_modules`` or a conda env under the folder you point
+#: at can hold tens of thousands of icons and turn a scan into a stall.
+SKIP_DIRS = {
+    ".git", ".hg", ".svn", ".idea", ".vscode", "__pycache__", ".ipynb_checkpoints",
+    ".mypy_cache", ".pytest_cache", ".ruff_cache", "node_modules", ".tox",
+    "site-packages", "$recycle.bin", "system volume information",
+}
 
-    Uses :func:`os.scandir`, whose ``DirEntry.stat()`` is served from the
-    directory enumeration on Windows: roughly an order of magnitude fewer
-    syscalls than ``Path.iterdir()`` + ``Path.stat()``, which matters a lot on
-    network drives.
+#: ``max_depth`` value meaning "walk the whole tree, however deep it goes".
+DEPTH_UNLIMITED = -1
+
+#: Hard stop on one scan. A recursive scan of a drive root would otherwise
+#: build a list no human can use and eat memory doing it. The caller is told
+#: the listing was cut short so it can say so instead of quietly lying.
+MAX_SCAN_ENTRIES = 20_000
+
+
+def _skip_dir(name: str) -> bool:
+    """True for hidden and well-known noise directories."""
+    return name.startswith(".") or name.lower() in SKIP_DIRS
+
+
+def scan_folder(folder: Path, *, kinds: set[str], max_depth: int = 0,
+                sort_by: str = "name", descending: bool = False,
+                limit: int = MAX_SCAN_ENTRIES) -> tuple[list[Entry], bool]:
+    """List supported files in ``folder``, optionally several levels deep.
+
+    Parameters
+    ----------
+    max_depth:
+        ``0``  - only files directly inside ``folder`` (the classic behaviour).
+        ``n``  - also descend ``n`` levels of sub-folders.
+        ``-1`` (:data:`DEPTH_UNLIMITED`) - walk the entire tree.
+    limit:
+        Stop after this many matches; the second return value is then ``True``.
+
+    The walk is **breadth-first**, so the shallowest files are found first and
+    a truncated scan still contains everything near the top rather than one
+    deep branch. Uses :func:`os.scandir`, whose ``DirEntry.stat()`` is served
+    from the directory enumeration on Windows: roughly an order of magnitude
+    fewer syscalls than ``Path.iterdir()`` + ``Path.stat()``, which matters a
+    lot on network drives and matters even more once the scan is recursive.
+
+    Returns ``(entries, truncated)``.
     """
+    root = Path(folder)
     entries: list[Entry] = []
-    stack = [folder]
-    seen_dirs: set[str] = set()
-    while stack:
-        current = stack.pop()
-        try:
-            real = os.path.realpath(current)
-            if real in seen_dirs:       # guard against symlink loops
+    truncated = False
+    seen_dirs: set[str] = set()       # realpath guard against symlink loops
+    level: list[Path] = [root]        # directories at the current depth
+    depth = 0
+
+    while level and not truncated:
+        deeper: list[Path] = []
+        for current in level:
+            try:
+                real = os.path.realpath(current)
+            except OSError:
+                continue
+            if real in seen_dirs:
                 continue
             seen_dirs.add(real)
-            with os.scandir(current) as it:
-                for item in it:
-                    try:
-                        if item.is_dir(follow_symlinks=False):
-                            if recursive and not item.name.startswith("."):
-                                stack.append(Path(item.path))
+            try:
+                with os.scandir(current) as it:
+                    for item in it:
+                        try:
+                            if item.is_dir(follow_symlinks=False):
+                                # Descend only while the next level is still
+                                # within the requested depth.
+                                if (max_depth < 0 or depth < max_depth) and not _skip_dir(item.name):
+                                    deeper.append(Path(item.path))
+                                continue
+                            if not item.is_file(follow_symlinks=False):
+                                continue
+                            kind = suffix_kind(os.path.splitext(item.name)[1])
+                            if kind is None or kind not in kinds:
+                                continue
+                            stat = item.stat()
+                            entries.append(Entry(Path(item.path), stat.st_size,
+                                                 stat.st_mtime, kind, root))
+                            if len(entries) >= limit:
+                                truncated = True
+                                break
+                        except OSError:
                             continue
-                        if not item.is_file(follow_symlinks=False):
-                            continue
-                        kind = suffix_kind(os.path.splitext(item.name)[1])
-                        if kind is None or kind not in kinds:
-                            continue
-                        stat = item.stat()
-                        entries.append(Entry(Path(item.path), stat.st_size,
-                                             stat.st_mtime, kind))
-                    except OSError:
-                        continue
-        except OSError:
-            continue
+            except OSError:
+                continue
+            if truncated:
+                break
+        depth += 1
+        level = deeper
+
     entries.sort(key=SORT_KEYS.get(sort_by, SORT_KEYS["name"]), reverse=descending)
-    return entries
+    return entries, truncated
 
 
 def format_size(num_bytes: int) -> str:

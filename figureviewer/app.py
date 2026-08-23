@@ -16,7 +16,11 @@ Shared across all windows:
 from __future__ import annotations
 
 import json
+import os
+import secrets
+import socket
 import sys
+import threading
 import tkinter as tk
 from pathlib import Path
 from typing import Optional
@@ -30,6 +34,15 @@ APP_DIR = Path(__file__).resolve().parent.parent
 SETTINGS_DIR = Path.home() / "AppData" / "Roaming" / "FigureViewerApp"
 SETTINGS_PATH = SETTINGS_DIR / "settings.json"
 
+#: Where a running instance advertises the loopback port it listens on, so that
+#: a second launch (a double-clicked PNG, say) can hand its file over instead of
+#: starting a whole second copy of the app. See :class:`InstanceServer`.
+INSTANCE_PATH = SETTINGS_DIR / "instance.json"
+
+#: Mirror of :data:`figureviewer.docs.DEPTH_UNLIMITED`, used by the settings
+#: migration below.
+DEPTH_UNLIMITED = D.DEPTH_UNLIMITED
+
 DEFAULT_SETTINGS: dict = {
     "theme": "dark",
     "geometry": "1560x960+70+50",
@@ -38,7 +51,13 @@ DEFAULT_SETTINGS: dict = {
     "filter": D.FILTER_ALL,
     "sort_by": "name",
     "sort_desc": False,
-    "recursive": False,
+    # Sub-folder levels to include when listing a folder: 0 = that folder
+    # only, n = n levels below it, -1 = the whole tree. See docs.scan_folder.
+    "scan_depth": 0,
+    # Reuse an already-open window when a file is opened from Explorer. This is
+    # what makes the app pleasant as the system default viewer: clicking ten
+    # PNGs in a row fills one window instead of opening ten.
+    "single_instance": True,
     "auto_reload": True,
     "show_sidebar": True,
     "show_info": False,
@@ -57,12 +76,24 @@ DEFAULT_SETTINGS: dict = {
 def load_settings() -> dict:
     """Read settings, falling back to defaults for anything missing."""
     values = dict(DEFAULT_SETTINGS)
+    stored: dict = {}
     try:
-        stored = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
-        if isinstance(stored, dict):
+        # utf-8-sig, not utf-8: a settings file that has been through Notepad
+        # or PowerShell's Set-Content carries a byte-order mark, and a plain
+        # utf-8 read would leave it in the string, break json.loads and throw
+        # every preference away without a word.
+        loaded = json.loads(SETTINGS_PATH.read_text(encoding="utf-8-sig"))
+        if isinstance(loaded, dict):
+            stored = loaded
             values.update(stored)
     except Exception:
         pass
+    # Migration from the 2.0 boolean, whose "include subfolders" meant "all of
+    # them". Tested against `stored`, not `values`: the merged dict always has
+    # a scan_depth because the default provides one.
+    if "scan_depth" not in stored and stored.get("recursive"):
+        values["scan_depth"] = DEPTH_UNLIMITED
+    values.pop("recursive", None)
     return values
 
 
@@ -73,6 +104,107 @@ def save_settings(values: dict) -> None:
         SETTINGS_PATH.write_text(json.dumps(values, indent=2), encoding="utf-8")
     except Exception:
         pass
+
+
+class InstanceServer:
+    """A tiny loopback server that lets a second launch reuse this window.
+
+    Why this exists
+    ---------------
+    Once Figure Viewer is the system default for PNGs and PDFs, every
+    double-click in Explorer starts a fresh Python process: about a second of
+    interpreter start-up, a new window, and a second copy of every cached
+    document. Instead, the first instance listens on an ephemeral loopback port
+    and later launches simply hand it the path and exit.
+
+    Safety
+    ------
+    * bound to ``127.0.0.1`` only, so nothing off this machine can reach it;
+    * an ephemeral port, published in a file inside the user's own profile;
+    * a random per-run token that the client must echo back, so another local
+      process cannot drive the viewer just by guessing the port;
+    * the payload is a JSON list of paths and nothing else - it is never
+      executed, only opened.
+
+    Failure is always non-fatal: if anything here breaks, the app simply keeps
+    behaving the way it did before, one process per launch.
+    """
+
+    def __init__(self, app: "App") -> None:
+        self.app = app
+        self.token = secrets.token_hex(16)
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.socket.bind(("127.0.0.1", 0))
+        self.socket.listen(8)
+        self.port = self.socket.getsockname()[1]
+        self._publish()
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def _publish(self) -> None:
+        """Advertise the port and token for the next launch to find."""
+        SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
+        INSTANCE_PATH.write_text(
+            json.dumps({"port": self.port, "token": self.token, "pid": os.getpid()}),
+            encoding="utf-8")
+
+    def _serve(self) -> None:
+        """Accept handoffs until the socket is closed at shutdown."""
+        while True:
+            try:
+                conn, _addr = self.socket.accept()
+            except OSError:
+                return                      # socket closed: the app is quitting
+            paths: list[Path] = []
+            with conn:
+                try:
+                    conn.settimeout(2.0)
+                    raw = conn.recv(64 * 1024).decode("utf-8", "replace")
+                    message = json.loads(raw)
+                    if message.get("token") != self.token:
+                        continue
+                    paths = [Path(item) for item in message.get("paths", [])
+                             if isinstance(item, str)]
+                    conn.sendall(b'{"ok": true}')
+                except Exception:
+                    continue
+            if paths:
+                # Tk is not thread-safe: hop back onto the UI thread.
+                self.app.root.after(0, lambda p=paths: self.app.open_paths(p))
+
+    def close(self) -> None:
+        try:
+            self.socket.close()
+        except Exception:
+            pass
+        try:
+            if INSTANCE_PATH.exists():
+                stored = json.loads(INSTANCE_PATH.read_text(encoding="utf-8"))
+                if stored.get("pid") == os.getpid():
+                    INSTANCE_PATH.unlink()
+        except Exception:
+            pass
+
+
+def hand_over_to_running_instance(paths: list[Path]) -> bool:
+    """Give ``paths`` to an already-running viewer. True if it accepted them.
+
+    A stale instance file - left behind by a crash - simply fails to connect,
+    and the caller starts a normal instance which overwrites it.
+    """
+    try:
+        stored = json.loads(INSTANCE_PATH.read_text(encoding="utf-8"))
+        port, token = int(stored["port"]), str(stored["token"])
+    except Exception:
+        return False
+    payload = json.dumps({"token": token, "paths": [str(p) for p in paths]})
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=1.5) as conn:
+            conn.settimeout(1.5)
+            conn.sendall(payload.encode("utf-8"))
+            return b'"ok"' in conn.recv(1024)
+    except Exception:
+        return False
 
 
 class App:
@@ -103,6 +235,13 @@ class App:
 
         start = folder or self._initial_folder()
         self.new_window(start, select)
+
+        self.instance: Optional[InstanceServer] = None
+        if self.settings.get("single_instance", True):
+            try:
+                self.instance = InstanceServer(self)
+            except Exception:
+                self.instance = None      # never let IPC stop the app starting
 
     # ------------------------------------------------------------- helpers
     def _initial_folder(self) -> Path:
@@ -144,6 +283,40 @@ class App:
         self.push_recent(Path(folder))
         return window
 
+    def open_paths(self, paths: list[Path]) -> None:
+        """Show files or folders handed over by a second launch.
+
+        The first target reuses the most recently opened window; any further
+        ones get windows of their own, which is what someone selecting five
+        figures in Explorer and pressing Enter expects.
+        """
+        for index, raw in enumerate(paths):
+            folder, select = resolve_target(str(raw))
+            if folder is None:
+                continue
+            if index == 0 and self.windows:
+                window = self.windows[-1]
+                window.reveal_path(select or folder)
+            else:
+                window = self.new_window(folder, select)
+            self.focus_window(window)
+
+    def focus_window(self, window) -> None:
+        """Bring a window to the front, the way a shell-opened file should.
+
+        Windows refuses focus to a process the user did not just interact with,
+        so the usual lift/focus pair is not enough; a brief topmost flip is the
+        standard way round it without leaving the window permanently on top.
+        """
+        try:
+            window.deiconify()
+            window.lift()
+            window.attributes("-topmost", True)
+            window.after(180, lambda: window.attributes("-topmost", False))
+            window.focus_force()
+        except Exception:
+            pass
+
     def forget_window(self, window) -> None:
         """Called by a window when it closes; quits once the last one is gone."""
         if window in self.windows:
@@ -154,6 +327,8 @@ class App:
     def quit_all(self) -> None:
         """Save state, tear down the worker pool and exit the main loop."""
         save_settings(self.settings)
+        if getattr(self, "instance", None) is not None:
+            self.instance.close()
         try:
             self.worker.shutdown()
         except Exception:
@@ -237,8 +412,23 @@ def resolve_target(argument: Optional[str]) -> tuple[Optional[Path], Optional[Pa
 
 
 def main(argv: Optional[list[str]] = None) -> int:
-    """Entry point used by ``figure_viewer_app.py``."""
+    """Entry point used by ``figure_viewer_app.py``.
+
+    Accepts any number of files or folders, which is what Explorer sends when
+    several selected files are opened at once. If a viewer is already running
+    and single-instance mode is on, the paths are handed to it and this process
+    exits immediately instead of starting a duplicate.
+    """
     argv = list(sys.argv[1:] if argv is None else argv)
-    folder, select = resolve_target(argv[0] if argv else None)
-    App(folder, select).run()
+    targets = [Path(item).expanduser() for item in argv if item and not item.startswith("-")]
+
+    if targets and load_settings().get("single_instance", True):
+        if hand_over_to_running_instance(targets):
+            return 0
+
+    folder, select = resolve_target(str(targets[0]) if targets else None)
+    app = App(folder, select)
+    if len(targets) > 1:
+        app.root.after(400, lambda: app.open_paths(targets[1:]))
+    app.run()
     return 0

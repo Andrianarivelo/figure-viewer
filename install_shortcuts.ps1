@@ -31,49 +31,14 @@ if (-not (Test-Path $Launcher)) { throw "Missing launcher: $Launcher" }
 # Pick an interpreter that can actually run the GUI. Several Pythons are usually
 # on PATH and only some have Pillow, so each candidate is probed rather than
 # assumed. A hardcoded Anaconda path was what broke this script in the first
-# place.
-function Resolve-ViewerPython {
-    $candidates = New-Object System.Collections.Generic.List[string]
-
-    if ($env:FIGURE_VIEWER_PYTHON) { $candidates.Add($env:FIGURE_VIEWER_PYTHON) }
-    foreach ($root in @("$env:USERPROFILE\miniconda3", "$env:USERPROFILE\anaconda3",
-                        "$env:LOCALAPPDATA\miniconda3", "$env:LOCALAPPDATA\anaconda3")) {
-        $candidates.Add((Join-Path $root "python.exe"))
-    }
-    foreach ($name in @("python.exe", "pythonw.exe")) {
-        $cmd = Get-Command $name -ErrorAction SilentlyContinue
-        if ($null -ne $cmd) { $candidates.Add($cmd.Source) }
-    }
-
-    $firstExisting = $null
-    foreach ($c in $candidates) {
-        if (-not (Test-Path $c)) { continue }
-        # Probe with the console build so an exit code comes back.
-        $probe = $c
-        if ([IO.Path]::GetFileName($c).ToLower() -eq "pythonw.exe") {
-            $sibling = Join-Path (Split-Path -Parent $c) "python.exe"
-            if (Test-Path $sibling) { $probe = $sibling }
-        }
-        if ($null -eq $firstExisting) { $firstExisting = $c }
-        & $probe -c "import PIL, tkinter" 2>$null
-        if ($LASTEXITCODE -eq 0) { return $c }
-        Write-Host "  skipped (no Pillow/tkinter)  $probe"
-    }
-    if ($null -ne $firstExisting) {
-        Write-Warning "No interpreter with Pillow found; using $firstExisting anyway."
-        return $firstExisting
-    }
-    throw "No Python interpreter found. Install Python or set FIGURE_VIEWER_PYTHON."
-}
+# place. The probing itself lives in viewer_python.ps1 so that this script and
+# register_file_types.ps1 can never disagree about which Python to use.
+. (Join-Path $AppDir "viewer_python.ps1")
 
 $Python = Resolve-ViewerPython
 
 # Use the windowless build for the shortcut so no console flashes on launch.
-$Pythonw = $Python
-if ([IO.Path]::GetFileName($Python).ToLower() -eq "python.exe") {
-    $sibling = Join-Path (Split-Path -Parent $Python) "pythonw.exe"
-    if (Test-Path $sibling) { $Pythonw = $sibling }
-}
+$Pythonw = Get-WindowlessPython -Python $Python
 
 $Shell     = New-Object -ComObject WScript.Shell
 $StartMenu = Join-Path $Shell.SpecialFolders("Programs") ""

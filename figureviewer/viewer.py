@@ -53,9 +53,33 @@ WATCH_MS = 1200             # folder polling interval
 TOAST_MS = 2400
 MINIMAP_MAX = 190
 
+#: iid prefix for the sub-folder nodes of a grouped listing. A NUL byte cannot
+#: appear in a Windows path, so these can never be mistaken for a file row.
+GROUP_PREFIX = "\x00dir:"
+
 FIT_PAGE = "page"
 FIT_WIDTH = "width"
 FIT_FREE = "free"
+
+#: Tools > Subfolder Depth. The value is the ``max_depth`` handed to
+#: :func:`figureviewer.docs.scan_folder`: 0 is the folder itself, n descends n
+#: levels, -1 walks the whole tree.
+DEPTH_CHOICES: tuple[tuple[str, int], ...] = (
+    ("This Folder Only", 0),
+    ("+ 1 Level", 1),
+    ("+ 2 Levels", 2),
+    ("+ 3 Levels", 3),
+    ("+ 5 Levels", 5),
+    ("All Levels", D.DEPTH_UNLIMITED),
+)
+
+
+def depth_label(value: int) -> str:
+    """Human-readable name for a scan depth, for status bars and tooltips."""
+    for label, candidate in DEPTH_CHOICES:
+        if candidate == value:
+            return label
+    return f"+ {value} Levels" if value > 0 else "All Levels"
 
 
 def _open_in_shell(path: Path) -> None:
@@ -163,6 +187,9 @@ class ViewerWindow(tk.Toplevel):
         self._destroyed = False
         self._suppress_select = False
         self._probe_text = ""
+        self._scan_truncated = False
+        self._grouped = False
+        self._last_depth = int(app.settings.get("scan_depth", 0)) or D.DEPTH_UNLIMITED
 
         settings = app.settings
         self.search_var = tk.StringVar()
@@ -174,9 +201,17 @@ class ViewerWindow(tk.Toplevel):
         self.count_var = tk.StringVar(value="")
 
         self.kind_filter = tk.StringVar(value=settings.get("filter", D.FILTER_ALL))
+        if select is not None:
+            # Opened straight onto a file: never let a remembered "Images only"
+            # filter hide the very PDF the user double-clicked.
+            kind = D.suffix_kind(select.suffix)
+            if kind is not None and kind not in D.kinds_for_filter(self.kind_filter.get()):
+                self.kind_filter.set(D.FILTER_ALL)
         self.sort_by = tk.StringVar(value=settings.get("sort_by", "name"))
         self.sort_desc = tk.BooleanVar(value=bool(settings.get("sort_desc", False)))
-        self.recursive = tk.BooleanVar(value=bool(settings.get("recursive", False)))
+        # How many levels of sub-folders to include: 0 = this folder only,
+        # n = n levels down, -1 = the whole tree. See D.scan_folder.
+        self.scan_depth = tk.IntVar(value=int(settings.get("scan_depth", 0)))
         self.auto_reload = tk.BooleanVar(value=bool(settings.get("auto_reload", True)))
         self.show_sidebar = tk.BooleanVar(value=bool(settings.get("show_sidebar", True)))
         self.show_info = tk.BooleanVar(value=bool(settings.get("show_info", False)))
@@ -373,6 +408,7 @@ class ViewerWindow(tk.Toplevel):
         self.tree.bind("<Double-1>", lambda _e: self.open_default_app())
         self.tree.bind("<Button-3>", self._file_context_menu)
         self.tree.tag_configure("doc", foreground=self.palette.accent)
+        self.tree.tag_configure("group", foreground=self.palette.muted)
 
         actions = ttk.Frame(frame, style="Panel.TFrame")
         actions.grid(row=3, column=0, sticky="ew", pady=(8, 0))
@@ -507,7 +543,12 @@ class ViewerWindow(tk.Toplevel):
         sort_menu.add_separator()
         sort_menu.add_checkbutton(label="Descending", variable=self.sort_desc, command=self.rescan)
         tools_menu.add_cascade(label="Sort By", menu=sort_menu)
-        tools_menu.add_checkbutton(label="Include Subfolders", variable=self.recursive, command=self.rescan)
+        depth_menu = tk.Menu(tools_menu)
+        style_menu(depth_menu, p)
+        for label, value in DEPTH_CHOICES:
+            depth_menu.add_radiobutton(label=label, value=value, variable=self.scan_depth,
+                                       command=self._depth_changed)
+        tools_menu.add_cascade(label="Subfolder Depth", menu=depth_menu)
         tools_menu.add_checkbutton(label="Auto Reload on Change", variable=self.auto_reload)
         tools_menu.add_separator()
         tools_menu.add_checkbutton(label="Slideshow", accelerator="F9", variable=self.slideshow_on,
@@ -519,6 +560,9 @@ class ViewerWindow(tk.Toplevel):
         tools_menu.add_separator()
         tools_menu.add_command(label="Rescan Folder", accelerator="F5", command=self.reload_all)
         tools_menu.add_command(label="Clear Caches", command=self.clear_caches)
+        tools_menu.add_separator()
+        tools_menu.add_command(label="Set as Default Image / PDF Viewer…",
+                               command=self.register_file_types)
 
         help_menu = self.menubar.add_menu("Help", underline=0)
         help_menu.add_command(label="Keyboard Shortcuts", accelerator="F1", command=self.show_shortcuts)
@@ -592,6 +636,7 @@ class ViewerWindow(tk.Toplevel):
         bind("<Control-P>", lambda e: self.copy_path())
         bind("<Control-V>", lambda e: self.copy_view())
         bind("<Control-l>", lambda e: self._focus_folder())
+        bind("<Control-R>", lambda e: self.toggle_subfolders())
 
         bind("<Control-plus>", lambda e: self.zoom_by(ZOOM_STEP))
         bind("<Control-equal>", lambda e: self.zoom_by(ZOOM_STEP))
@@ -698,6 +743,47 @@ class ViewerWindow(tk.Toplevel):
         else:
             self.set_folder(path)
 
+    def reveal_path(self, target: Path) -> None:
+        """Show ``target`` in this window, reusing the current listing if it can.
+
+        Called when a second launch hands a file over (see
+        :class:`figureviewer.app.InstanceServer`). Staying in the current folder
+        matters: if the user is browsing ``exp/`` three levels deep and opens
+        ``exp/run7/figures/psth.png`` from Explorer, jumping the window to
+        ``figures/`` would throw away the listing they were working in.
+        """
+        try:
+            target = target.expanduser().resolve()
+        except Exception:
+            pass
+
+        if target.is_dir():
+            if target != self.folder:
+                self.set_folder(target)
+            return
+
+        # A PDF opened while the toolbar says "Images" would land in an empty
+        # list; widen the filter rather than showing nothing.
+        kind = D.suffix_kind(target.suffix)
+        if kind is not None and kind not in D.kinds_for_filter(self.kind_filter.get()):
+            self.kind_filter.set(D.FILTER_ALL)
+
+        if self._covers(target):
+            self.pending_select = target
+            self.rescan(keep_selection=False)
+        else:
+            self.set_folder(target.parent, target)
+
+    def _covers(self, target: Path) -> bool:
+        """True if the current folder and scan depth already list ``target``."""
+        try:
+            relative = target.relative_to(self.folder)
+        except ValueError:
+            return False
+        depth = self.scan_depth.get()
+        levels = len(relative.parts) - 1
+        return depth < 0 or levels <= depth
+
     def go_parent(self) -> None:
         parent = self.folder.parent
         if parent != self.folder:
@@ -734,26 +820,31 @@ class ViewerWindow(tk.Toplevel):
         self._rescan_pending += 1
         folder = self.folder
         kinds = D.kinds_for_filter(self.kind_filter.get())
-        recursive = self.recursive.get()
+        depth = self.scan_depth.get()
         sort_by = self.sort_by.get()
         descending = self.sort_desc.get()
         keep = self.current.path if (keep_selection and self.current) else self.pending_select
 
         def job():
-            return D.scan_folder(folder, kinds=kinds, recursive=recursive,
+            return D.scan_folder(folder, kinds=kinds, max_depth=depth,
                                  sort_by=sort_by, descending=descending)
 
-        def done(entries):
+        def done(result):
+            entries, truncated = result
             self._rescan_pending = max(0, self._rescan_pending - 1)
             if self._destroyed or folder != self.folder or sequence < self._list_applied:
                 return
             self._list_applied = sequence
             self.entries = entries
+            self._scan_truncated = truncated
             self.app.settings.update({
                 "filter": self.kind_filter.get(), "sort_by": sort_by,
-                "sort_desc": descending, "recursive": recursive,
+                "sort_desc": descending, "scan_depth": depth,
             })
             self._apply_filter(select_path=keep)
+            if truncated:
+                self.toast(f"Listing capped at {len(entries):,} files - "
+                           f"reduce the subfolder depth or use the search box")
 
         def failed(exc):
             self._rescan_pending = max(0, self._rescan_pending - 1)
@@ -775,7 +866,8 @@ class ViewerWindow(tk.Toplevel):
     def _apply_filter(self, select_path: Optional[Path] = None) -> None:
         """Rebuild the sidebar list from ``self.entries`` and the search text."""
         terms = [t for t in self.search_var.get().strip().lower().split() if t]
-        self.filtered = [e for e in self.entries if self._match(e.name, terms)] if terms else list(self.entries)
+        self.filtered = ([e for e in self.entries if self._match(e.relname, terms)]
+                         if terms else list(self.entries))
 
         target = select_path or (self.current.path if self.current else None)
         size = self.thumb_size.get()
@@ -783,15 +875,28 @@ class ViewerWindow(tk.Toplevel):
         # Only touch the Treeview when the visible set actually changed. A
         # figure being overwritten every second must not make the list flicker
         # or throw away its thumbnails.
+        # A recursive listing is shown as a real tree - one collapsible node per
+        # sub-folder - but only when the sort order is folder-aware. Sorting by
+        # date or size is asked for precisely to see the newest files *across*
+        # folders, so grouping them back up would undo the sort; those modes get
+        # a flat list with the relative path on each row instead.
+        grouped = (self.scan_depth.get() != 0
+                   and self.sort_by.get() in ("name", "kind")
+                   and any(entry.depth for entry in self.filtered))
+
         rows = [str(entry.path) for entry in self.filtered]
-        if rows != self._displayed:
+        if rows != self._displayed or grouped != self._grouped:
             self._suppress_select = True
             self.tree.delete(*self.tree.get_children())
+            groups: dict[str, str] = {"": ""}     # sub-folder -> parent node iid
             for entry in self.filtered:
-                self.tree.insert("", "end", iid=str(entry.path), text=f"  {entry.name}",
+                parent = self._ensure_group(entry.subfolder, groups) if grouped else ""
+                label = entry.name if grouped else entry.relname
+                self.tree.insert(parent, "end", iid=str(entry.path), text=f"  {label}",
                                  tags=("doc",) if entry.kind == D.KIND_DOC else ())
             self._suppress_select = False
             self._displayed = rows
+            self._grouped = grouped
             self._thumb_photos = {iid: photo for iid, photo in self._thumb_photos.items()
                                   if iid in set(rows)}
             for iid, photo in self._thumb_photos.items():
@@ -802,8 +907,13 @@ class ViewerWindow(tk.Toplevel):
 
         docs_count = sum(1 for e in self.filtered if e.kind == D.KIND_DOC)
         images = len(self.filtered) - docs_count
-        self.count_var.set(f"{images} img · {docs_count} doc"
-                           if docs_count else f"{len(self.filtered)}")
+        count = (f"{images} img · {docs_count} doc" if docs_count
+                 else f"{len(self.filtered)}")
+        if self.scan_depth.get() != 0:
+            folders = len({e.subfolder for e in self.filtered})
+            if folders > 1:
+                count += f" · {folders} dirs"
+        self.count_var.set(count)
 
         if size:
             self._queue_thumbnails(size)
@@ -839,6 +949,23 @@ class ViewerWindow(tk.Toplevel):
             else:
                 self.current = fresh
 
+    def _ensure_group(self, subfolder: str, groups: dict[str, str]) -> str:
+        """Return the tree node for ``subfolder``, creating missing ancestors.
+
+        Folder nodes get an iid that can never collide with a file path: real
+        paths cannot contain a NUL byte, and every selection handler treats an
+        iid starting with :data:`GROUP_PREFIX` as "not a file".
+        """
+        if subfolder in groups:
+            return groups[subfolder]
+        head, _, tail = subfolder.rpartition(os.sep)
+        parent = self._ensure_group(head, groups) if head else ""
+        iid = GROUP_PREFIX + subfolder
+        self.tree.insert(parent, "end", iid=iid, text=f"  {tail or subfolder}",
+                         open=True, tags=("group",))
+        groups[subfolder] = iid
+        return iid
+
     def _highlight(self, index: int) -> None:
         """Select a row without triggering a reload."""
         if not (0 <= index < len(self.filtered)):
@@ -864,7 +991,7 @@ class ViewerWindow(tk.Toplevel):
         if self._suppress_select:
             return
         selection = self.tree.selection()
-        if not selection:
+        if not selection or selection[0].startswith(GROUP_PREFIX):
             return
         path = Path(selection[0])
         if self.current and self.current.path == path:
@@ -963,7 +1090,7 @@ class ViewerWindow(tk.Toplevel):
             self.document = None
             self.canvas.delete("all")
             self._draw_message(str(exc))
-            self.status_var.set(f"Could not open {entry.name}: {exc}")
+            self.status_var.set(f"Could not open {entry.relname}: {exc}")
 
         self.app.worker.submit(job, done, failed)
 
@@ -1825,6 +1952,62 @@ class ViewerWindow(tk.Toplevel):
         self.kind_filter.set(mode)
         self.rescan()
 
+    # ------------------------------------------------------ subfolder depth
+    def _depth_changed(self) -> None:
+        """Apply a new Tools > Subfolder Depth choice and say what changed."""
+        depth = self.scan_depth.get()
+        self.app.settings["scan_depth"] = depth
+        self._displayed = []          # the row labels change shape, force a rebuild
+        self.toast(f"Scanning: {depth_label(depth).lower()}")
+        self.rescan()
+
+    def toggle_subfolders(self) -> None:
+        """Ctrl+Shift+R: flip between this folder only and the whole tree.
+
+        Toggling back restores the depth that was last chosen from the menu, so
+        someone who picked "+ 2 Levels" does not silently get the whole tree.
+        """
+        current = self.scan_depth.get()
+        if current == 0:
+            self.scan_depth.set(self._last_depth or D.DEPTH_UNLIMITED)
+        else:
+            self._last_depth = current
+            self.scan_depth.set(0)
+        self._depth_changed()
+
+    # ------------------------------------------------- shell integration
+    def register_file_types(self) -> None:
+        """Run register_file_types.ps1 so Windows can offer this app as default.
+
+        Windows does not let a program silently seize a file association: the
+        final choice is protected by a per-user hash that only Explorer and the
+        Settings app can write. The script therefore does everything that *is*
+        allowed - registering the ProgIDs, the "Open with" entries and the app's
+        capabilities - and then opens Settings > Default apps for the last click.
+        """
+        script = self.app.app_dir / "register_file_types.ps1"
+        if not script.exists():
+            messagebox.showerror("Missing script", f"Not found:\n{script}", parent=self)
+            return
+        if not messagebox.askokcancel(
+                "Set as default viewer",
+                "Figure Viewer will be registered with Windows for images and PDFs.\n\n"
+                "Nothing outside your own user account is modified, and\n"
+                "unregister_file_types.ps1 undoes it.\n\n"
+                "Windows then opens its Default apps page: pick Figure Viewer\n"
+                "there to finish, because only Windows itself may set the final\n"
+                "association.", parent=self):
+            return
+        try:
+            subprocess.Popen(
+                ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                 "-File", str(script)],
+                cwd=str(self.app.app_dir),
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            self.toast("Registering file types…")
+        except Exception as exc:
+            messagebox.showerror("Registration failed", str(exc), parent=self)
+
     def focus_search(self) -> None:
         self.search_entry.focus_set()
         self.search_entry.select_range(0, tk.END)
@@ -1898,7 +2081,7 @@ class ViewerWindow(tk.Toplevel):
         if self._rescan_pending == 0 and not self._watch_inflight and self.winfo_viewable():
             folder = self.folder
             kinds = D.kinds_for_filter(self.kind_filter.get())
-            recursive = self.recursive.get()
+            depth = self.scan_depth.get()
             sort_by = self.sort_by.get()
             descending = self.sort_desc.get()
             self._list_seq += 1
@@ -1906,10 +2089,12 @@ class ViewerWindow(tk.Toplevel):
             self._watch_inflight = True
 
             def job():
-                return D.scan_folder(folder, kinds=kinds, recursive=recursive,
+                return D.scan_folder(folder, kinds=kinds, max_depth=depth,
                                      sort_by=sort_by, descending=descending)
 
-            def done(entries):
+            def done(result):
+                entries, truncated = result
+                self._scan_truncated = truncated
                 self._watch_inflight = False
                 if self._destroyed or folder != self.folder or sequence < self._list_applied:
                     return
@@ -1956,7 +2141,7 @@ class ViewerWindow(tk.Toplevel):
             return
         index = self._index() + 1
         self.status_var.set(
-            f"{note}  ·  {self.current.name}  ·  {D.format_size(self.current.size)}"
+            f"{note}  ·  {self.current.relname}  ·  {D.format_size(self.current.size)}"
             f"  ·  {D.format_time(self.current.mtime)}  ·  {index}/{len(self.filtered)}")
 
     def _update_info(self) -> None:
@@ -1969,6 +2154,10 @@ class ViewerWindow(tk.Toplevel):
         if self.current:
             rows: list[tuple[str, str]] = [
                 ("File", self.current.name),
+            ]
+            if self.current.depth:
+                rows.append(("Subfolder", self.current.subfolder))
+            rows += [
                 ("Folder", str(self.current.path.parent)),
                 ("Size", D.format_size(self.current.size)),
                 ("Modified", D.format_time(self.current.mtime)),
@@ -2010,7 +2199,7 @@ class ViewerWindow(tk.Toplevel):
 
     def _file_context_menu(self, event) -> None:
         row = self.tree.identify_row(event.y)
-        if row:
+        if row and not row.startswith(GROUP_PREFIX):
             self.tree.selection_set(row)
             self._on_tree_select()
         menu = tk.Menu(self)
@@ -2065,6 +2254,7 @@ class ViewerWindow(tk.Toplevel):
             ("Ctrl+N / Ctrl+Shift+N", "New window / duplicate this window"),
             ("Ctrl+O / Ctrl+Shift+O", "Open folder / open file"),
             ("Ctrl+1 / 2 / 3", "Show images / PDFs / everything"),
+            ("Ctrl+Shift+R", "Include subfolders / this folder only"),
             ("Ctrl+F", "Filter the file list"),
             ("F5", "Rescan and reload"),
             ("F9", "Slideshow"),

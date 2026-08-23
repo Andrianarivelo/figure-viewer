@@ -1,4 +1,4 @@
-# Figure Viewer 2.0
+# Figure Viewer 2.1
 
 A fast, themed, folder-based viewer for **figures and PDFs** on Windows.
 Point it at a folder, keep it open, and let your analysis scripts overwrite the
@@ -40,6 +40,35 @@ The interpreter is chosen at install time by probing candidates for Pillow and
 tkinter, rather than being hardcoded. Override it with the
 `FIGURE_VIEWER_PYTHON` environment variable if you need a specific one.
 
+### Make it the default image and PDF viewer
+
+```powershell
+powershell -ExecutionPolicy Bypass -File D:\Apps\figure-viewer\register_file_types.ps1
+```
+
+or, from inside the app, **Tools > Set as Default Image / PDF Viewer**.
+
+The script registers Figure Viewer with Windows for `.png .jpg .jpeg .jpe .tif
+.tiff .bmp .gif .webp .jp2 .ppm .pgm .pdf` (add `-IncludeVector` for `.svg .eps
+.xps .oxps .cbz .epub`, or `-Extensions png,pdf` to pick your own). Everything
+it writes lives under `HKEY_CURRENT_USER`, so no administrator rights are
+needed, and `unregister_file_types.ps1` removes all of it.
+
+**One click is left over, and that is Windows' doing, not an oversight.** Since
+Windows 8 the actual default for a file type is stored in a `UserChoice` key
+protected by a per-user hash that only Explorer and the Settings app can
+produce; programs that write it directly get reverted or break the association.
+So the script does everything legitimate - the ProgIDs, the icons, the *Open
+with* entries and the app capability block - and then opens
+**Settings > Apps > Default apps > Figure Viewer**, where *Set default* (or one
+click per file type) finishes the job. Per file, the other route is right-click
+> *Open with* > *Choose another app* > **Figure Viewer** > *Always use this app*.
+
+Once it is the default, double-clicking figures is cheap: a second launch hands
+its path to the window that is already open instead of starting another Python
+process, so clicking through ten PNGs fills one window rather than ten. Turn it
+off with `"single_instance": false` in the settings file.
+
 ### Requirements
 
 | Package | Needed for | Install |
@@ -48,6 +77,32 @@ tkinter, rather than being hardcoded. Override it with the
 | PyMuPDF | PDF / SVG / EPS / XPS / CBZ / EPUB | `pip install pymupdf` |
 
 Without PyMuPDF the app still runs; PDFs are listed but show an install hint.
+
+---
+
+## What is new in 2.1
+
+### Browse several levels of subfolders
+**Tools > Subfolder Depth** replaces the old on/off "Include Subfolders":
+*This Folder Only*, *+1 / +2 / +3 / +5 Levels* or *All Levels*. `Ctrl+Shift+R`
+flips between flat and deep, remembering the depth you last picked.
+
+A deep listing is shown as a **collapsible tree**, one node per subfolder, so
+`run01/figures/psth.png` and `run02/figures/psth.png` are finally
+distinguishable and the file names are not eaten by a long path. Sorting by
+date or size drops back to a flat list showing the relative path on each row,
+because "the newest figures anywhere under here" is exactly why you sorted that
+way. The search box matches the relative path too, so `run02 psth` narrows to
+one file, and the sidebar footer counts the folders involved.
+
+The walk is breadth-first, skips hidden and noise directories (`.git`,
+`__pycache__`, `node_modules`, `site-packages`, …), follows no symlink loops,
+and stops at 20 000 files with a warning rather than freezing on a drive root.
+
+### Default viewer for images and PDFs
+`register_file_types.ps1` registers the app with Windows; see
+[Make it the default image and PDF viewer](#make-it-the-default-image-and-pdf-viewer)
+above. A second launch hands its file to the window that is already open.
 
 ---
 
@@ -135,6 +190,7 @@ Press **F1** in the app for the full list. The essentials:
 | `Ctrl+Shift+V` | Copy exactly what is on screen |
 | `Ctrl+N` / `Ctrl+O` | New window / open folder |
 | `Ctrl+1` `Ctrl+2` `Ctrl+3` | Images / PDFs / everything |
+| `Ctrl+Shift+R` | Include subfolders / this folder only |
 | `Ctrl+B` `Ctrl+I` `Ctrl+T` | Sidebar / details / theme |
 | `F5` `F9` `F11` | Rescan / slideshow / full screen |
 
@@ -143,14 +199,18 @@ Press **F1** in the app for the full list. The essentials:
 ## Layout
 
 ```
-figure_viewer_app.py      entry point (name kept for the existing shortcuts)
-launch_figure_viewer.py   logging launcher used by the .bat and shortcuts
+figure_viewer_app.py       entry point (name kept for the existing shortcuts)
+launch_figure_viewer.py    logging launcher used by the .bat and shortcuts
+install_shortcuts.ps1      Desktop / Start Menu shortcuts
+register_file_types.ps1    register with Windows as an image and PDF viewer
+unregister_file_types.ps1  undo the above
+viewer_python.ps1          shared "which Python has Pillow?" probe
 figureviewer/
-    theme.py              palettes, ttk styling, themed menu bar, tooltips
-    winclip.py            Win32 clipboard (PNG + DIBV5 + DIB + HDROP + text)
-    docs.py               scanning, document model, caches, worker pool
-    viewer.py             the viewer window: canvas, view transform, commands
-    app.py                Tk root, settings, window registry
+    theme.py               palettes, ttk styling, themed menu bar, tooltips
+    winclip.py             Win32 clipboard (PNG + DIBV5 + DIB + HDROP + text)
+    docs.py                scanning, document model, caches, worker pool
+    viewer.py              the viewer window: canvas, view transform, commands
+    app.py                 Tk root, settings, window registry, single instance
 ```
 
 Settings live in `%APPDATA%\FigureViewerApp\settings.json`.
