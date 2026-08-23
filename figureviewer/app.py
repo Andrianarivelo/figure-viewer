@@ -27,8 +27,8 @@ from typing import Optional
 
 from . import APP_NAME
 from . import docs as D
-from .theme import (PALETTES, Palette, apply_theme, configure_fonts,
-                    configure_list_density, enable_dpi_awareness)
+from .theme import (PALETTES, SIDEBAR_DEFAULT, Palette, apply_theme,
+                    configure_fonts, configure_list_density, enable_dpi_awareness)
 
 APP_DIR = Path(__file__).resolve().parent.parent
 SETTINGS_DIR = Path.home() / "AppData" / "Roaming" / "FigureViewerApp"
@@ -38,10 +38,6 @@ SETTINGS_PATH = SETTINGS_DIR / "settings.json"
 #: a second launch (a double-clicked PNG, say) can hand its file over instead of
 #: starting a whole second copy of the app. See :class:`InstanceServer`.
 INSTANCE_PATH = SETTINGS_DIR / "instance.json"
-
-#: Mirror of :data:`figureviewer.docs.DEPTH_UNLIMITED`, used by the settings
-#: migration below.
-DEPTH_UNLIMITED = D.DEPTH_UNLIMITED
 
 DEFAULT_SETTINGS: dict = {
     "theme": "dark",
@@ -60,6 +56,9 @@ DEFAULT_SETTINGS: dict = {
     "single_instance": True,
     "auto_reload": True,
     "show_sidebar": True,
+    # Width of the file list, in pixels. Adjustable by dragging the handle
+    # between the list and the canvas.
+    "sidebar_width": SIDEBAR_DEFAULT,
     "show_info": False,
     "show_minimap": True,
     "smooth": True,
@@ -92,7 +91,7 @@ def load_settings() -> dict:
     # them". Tested against `stored`, not `values`: the merged dict always has
     # a scan_depth because the default provides one.
     if "scan_depth" not in stored and stored.get("recursive"):
-        values["scan_depth"] = DEPTH_UNLIMITED
+        values["scan_depth"] = D.DEPTH_UNLIMITED
     values.pop("recursive", None)
     return values
 
@@ -308,11 +307,17 @@ class App:
         so the usual lift/focus pair is not enough; a brief topmost flip is the
         standard way round it without leaving the window permanently on top.
         """
+        def drop_topmost() -> None:
+            try:
+                window.attributes("-topmost", False)
+            except Exception:
+                pass          # the window may have been closed in the meantime
+
         try:
             window.deiconify()
             window.lift()
             window.attributes("-topmost", True)
-            window.after(180, lambda: window.attributes("-topmost", False))
+            window.after(180, drop_topmost)
             window.focus_force()
         except Exception:
             pass

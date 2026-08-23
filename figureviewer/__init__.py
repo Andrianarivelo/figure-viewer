@@ -14,4 +14,4 @@ Package layout
 __all__ = ["APP_NAME", "APP_VERSION"]
 
 APP_NAME = "Figure Viewer"
-APP_VERSION = "2.1"
+APP_VERSION = "2.2"

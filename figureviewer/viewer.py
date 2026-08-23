@@ -42,8 +42,9 @@ from PIL import Image, ImageOps, ImageTk
 from . import APP_NAME, APP_VERSION
 from . import docs as D
 from . import winclip
-from .theme import (DENSITIES, MenuBar, Palette, bind_tooltip, configure_list_density,
-                    style_menu, toolbar_button)
+from .theme import (DENSITIES, LIST_FLAT, LIST_TREE, SIDEBAR_DEFAULT, SIDEBAR_MAX,
+                    SIDEBAR_MIN, MenuBar, Palette, bind_tooltip,
+                    configure_list_density, style_menu, toolbar_button)
 
 ZOOM_MIN = 0.02
 ZOOM_MAX = 32.0
@@ -52,6 +53,10 @@ QUALITY_DELAY_MS = 110      # idle time before the high-quality repaint
 WATCH_MS = 1200             # folder polling interval
 TOAST_MS = 2400
 MINIMAP_MAX = 190
+
+#: Below this width the sidebar header has no room for the long count, and the
+#: text would run under the FILES label and off the edge.
+COUNT_COMPACT_BELOW = 280
 
 #: iid prefix for the sub-folder nodes of a grouped listing. A NUL byte cannot
 #: appear in a Windows path, so these can never be mistaken for a file row.
@@ -189,6 +194,12 @@ class ViewerWindow(tk.Toplevel):
         self._probe_text = ""
         self._scan_truncated = False
         self._grouped = False
+        #: Sub-folders the user collapsed, kept so a rescan - which happens
+        #: every time a figure is overwritten - does not spring them open again.
+        self._collapsed: set[str] = set()
+        self._sash_origin: Optional[tuple[int, int]] = None
+        self._sidebar_px = max(SIDEBAR_MIN, min(SIDEBAR_MAX,
+                               int(app.settings.get("sidebar_width", SIDEBAR_DEFAULT))))
         self._last_depth = int(app.settings.get("scan_depth", 0)) or D.DEPTH_UNLIMITED
 
         settings = app.settings
@@ -322,8 +333,10 @@ class ViewerWindow(tk.Toplevel):
         toolbar_button(rot, "↺", lambda: self.rotate(-90), p, "Rotate left  (Ctrl+[)", width=3).pack(side="left")
         toolbar_button(rot, "↻", lambda: self.rotate(90), p, "Rotate right  (Ctrl+])", width=3).pack(side="left", padx=(2, 0))
 
+        # Modal.TCheckbutton, not Toggle: snip mode changes what dragging does,
+        # so it has to be unmistakable while it is on.
         self.snip_button = ttk.Checkbutton(
-            bar, text="✂ Snip", variable=self.snip_mode, style="Toggle.TCheckbutton",
+            bar, text="✂ Snip", variable=self.snip_mode, style="Modal.TCheckbutton",
             takefocus=False, command=self._snip_mode_changed)
         self.snip_button.grid(row=0, column=col, padx=(0, 8)); col += 1
         bind_tooltip(self.snip_button, "Drag a rectangle to copy that region  (S)", p)
@@ -337,14 +350,16 @@ class ViewerWindow(tk.Toplevel):
         body = ttk.Frame(self, style="TFrame")
         body.grid(row=3, column=0, sticky="nsew")
         body.rowconfigure(0, weight=1)
-        body.columnconfigure(1, weight=1)
+        body.columnconfigure(2, weight=1)      # the canvas takes the slack
         self.body = body
 
         self.sidebar = self._build_sidebar(body)
         self.sidebar.grid(row=0, column=0, sticky="nsew")
+        self._set_sidebar_width(self._sidebar_px)
+        self.sash = self._build_sash(body)
 
         stage = ttk.Frame(body, style="TFrame")
-        stage.grid(row=0, column=1, sticky="nsew")
+        stage.grid(row=0, column=2, sticky="nsew")
         stage.rowconfigure(0, weight=1)
         stage.columnconfigure(0, weight=1)
         self.canvas = tk.Canvas(stage, background=p.canvas, highlightthickness=0,
@@ -363,6 +378,9 @@ class ViewerWindow(tk.Toplevel):
         self.swatch = tk.Canvas(status, width=13, height=13, highlightthickness=1,
                                 highlightbackground=p.border, background=p.panel)
         self.swatch.grid(row=0, column=1, padx=(10, 6))
+        # Hidden until the pointer is actually over the image: an empty
+        # bordered square sitting in the status bar all day reads as a defect.
+        self.swatch.grid_remove()
         ttk.Label(status, textvariable=self.probe_var, style="Mono.TLabel").grid(row=0, column=2, padx=(0, 14))
         ttk.Label(status, textvariable=self.page_var, style="Status.TLabel").grid(row=0, column=3, padx=(0, 14))
         ttk.Label(status, textvariable=self.zoom_var, style="Mono.TLabel").grid(row=0, column=4)
@@ -389,6 +407,7 @@ class ViewerWindow(tk.Toplevel):
         self.search_var.trace_add("write", lambda *_: self._apply_filter())
         bind_tooltip(search, "Filter by name. Space-separated words are ANDed; "
                              "* and ? wildcards work too.  (Ctrl+F)", p)
+        self._install_placeholder(search, self.search_var, "Search files…")
 
         holder = ttk.Frame(frame, style="Panel.TFrame")
         holder.grid(row=2, column=0, sticky="nsew")
@@ -396,9 +415,9 @@ class ViewerWindow(tk.Toplevel):
         holder.columnconfigure(0, weight=1)
 
         self.tree = ttk.Treeview(holder, columns=("meta",), show="tree", selectmode="browse",
-                                 takefocus=True)
+                                 takefocus=True, style=LIST_FLAT)
         self.tree.grid(row=0, column=0, sticky="nsew")
-        self.tree.column("#0", width=250, stretch=True, anchor="w")
+        self.tree.column("#0", width=SIDEBAR_DEFAULT, stretch=True, anchor="w")
         self.tree.column("meta", width=0, stretch=False)
         scroll = ttk.Scrollbar(holder, orient="vertical", command=self.tree.yview,
                                style="Vertical.TScrollbar")
@@ -407,8 +426,12 @@ class ViewerWindow(tk.Toplevel):
         self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
         self.tree.bind("<Double-1>", lambda _e: self.open_default_app())
         self.tree.bind("<Button-3>", self._file_context_menu)
+        self.tree.bind("<<TreeviewOpen>>", self._on_group_toggle)
+        self.tree.bind("<<TreeviewClose>>", self._on_group_toggle)
         self.tree.tag_configure("doc", foreground=self.palette.accent)
-        self.tree.tag_configure("group", foreground=self.palette.muted)
+        # Folder rows are headers, not files: semibold and muted, so three
+        # levels of nesting still read as structure rather than more entries.
+        self.tree.tag_configure("group", foreground=self.palette.muted, font="FVuiBold")
 
         actions = ttk.Frame(frame, style="Panel.TFrame")
         actions.grid(row=3, column=0, sticky="ew", pady=(8, 0))
@@ -422,6 +445,53 @@ class ViewerWindow(tk.Toplevel):
                        "Open in the default application  (Enter)").grid(row=0, column=2, sticky="ew", padx=(3, 0))
         return frame
 
+    def _build_sash(self, master: tk.Misc) -> ttk.Frame:
+        """The draggable divider between the file list and the canvas."""
+        sash = ttk.Frame(master, style="Sash.TFrame", width=6, cursor="sb_h_double_arrow")
+        sash.grid(row=0, column=1, sticky="ns")
+        sash.bind("<Enter>", lambda _e: sash.configure(style="SashActive.TFrame"))
+        sash.bind("<Leave>", lambda _e: sash.configure(style="Sash.TFrame"))
+        sash.bind("<ButtonPress-1>", self._sash_press)
+        sash.bind("<B1-Motion>", self._sash_drag)
+        sash.bind("<ButtonRelease-1>", self._sash_release)
+        sash.bind("<Double-1>", lambda _e: self._set_sidebar_width(SIDEBAR_DEFAULT))
+        bind_tooltip(sash, "Drag to resize the file list  ·  double-click to reset",
+                     self.palette)
+        return sash
+
+    def _set_sidebar_width(self, width: int) -> None:
+        """Fix the sidebar to ``width`` pixels.
+
+        The width lives on the *frame*, with geometry propagation switched off,
+        rather than on the tree column: a column with ``stretch=True`` is
+        re-fitted to its widget on the next configure, so a width written there
+        is undone before the user lets go of the mouse.
+        """
+        width = max(SIDEBAR_MIN, min(SIDEBAR_MAX, int(width)))
+        self._sidebar_px = width
+        try:
+            self.sidebar.configure(width=width)
+            self.sidebar.grid_propagate(False)
+        except tk.TclError:
+            return
+        self.app.settings["sidebar_width"] = width
+        try:
+            self._update_count()
+        except AttributeError:
+            pass          # called once from _build_ui, before the list exists
+
+    def _sash_press(self, event) -> None:
+        self._sash_origin = (event.x_root, self._sidebar_px)
+
+    def _sash_drag(self, event) -> None:
+        if not self._sash_origin:
+            return
+        start_x, start_width = self._sash_origin
+        self._set_sidebar_width(start_width + (event.x_root - start_x))
+
+    def _sash_release(self, _event=None) -> None:
+        self._sash_origin = None
+
     def _build_info_panel(self, master: tk.Misc) -> ttk.Frame:
         """Right-hand metadata panel (hidden by default)."""
         p = self.palette
@@ -433,6 +503,12 @@ class ViewerWindow(tk.Toplevel):
                        insertbackground=p.text, relief="flat", highlightthickness=0,
                        font="FVsmall", padx=0, pady=8, spacing1=1, spacing3=3, cursor="arrow")
         text.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
+        # PDF metadata easily overflows the panel; without this the tail was
+        # simply invisible, with no hint that anything had been cut off.
+        info_scroll = ttk.Scrollbar(frame, orient="vertical", command=text.yview,
+                                    style="Vertical.TScrollbar")
+        info_scroll.grid(row=1, column=1, sticky="ns", pady=(8, 0))
+        text.configure(yscrollcommand=info_scroll.set)
         text.tag_configure("key", foreground=p.muted)
         text.tag_configure("value", foreground=p.text)
         text.configure(state="disabled")
@@ -699,12 +775,14 @@ class ViewerWindow(tk.Toplevel):
         """Show or hide the sidebar and details panel."""
         if self.show_sidebar.get():
             self.sidebar.grid(row=0, column=0, sticky="nsew")
-            self.body.columnconfigure(0, weight=0, minsize=210)
+            self.sash.grid(row=0, column=1, sticky="ns")
+            self.body.columnconfigure(0, weight=0, minsize=SIDEBAR_MIN)
         else:
             self.sidebar.grid_remove()
+            self.sash.grid_remove()
             self.body.columnconfigure(0, minsize=0)
         if self.show_info.get():
-            self.info_panel.grid(row=0, column=2, sticky="nsew")
+            self.info_panel.grid(row=0, column=3, sticky="nsew")
             self._update_info()
         else:
             self.info_panel.grid_remove()
@@ -760,6 +838,10 @@ class ViewerWindow(tk.Toplevel):
         if target.is_dir():
             if target != self.folder:
                 self.set_folder(target)
+            else:
+                # Same folder handed over again: still refresh, so a launch
+                # from Explorer never looks like nothing happened.
+                self.rescan()
             return
 
         # A PDF opened while the toolbar says "Images" would land in an empty
@@ -887,6 +969,11 @@ class ViewerWindow(tk.Toplevel):
         rows = [str(entry.path) for entry in self.filtered]
         if rows != self._displayed or grouped != self._grouped:
             self._suppress_select = True
+            if grouped != self._grouped:
+                # Only the tree style carries an expander element; the flat one
+                # deliberately has none, so no empty gutter appears in front of
+                # every file name when there are no folders to expand.
+                self.tree.configure(style=LIST_TREE if grouped else LIST_FLAT)
             self.tree.delete(*self.tree.get_children())
             groups: dict[str, str] = {"": ""}     # sub-folder -> parent node iid
             for entry in self.filtered:
@@ -905,15 +992,7 @@ class ViewerWindow(tk.Toplevel):
                 except tk.TclError:
                     pass
 
-        docs_count = sum(1 for e in self.filtered if e.kind == D.KIND_DOC)
-        images = len(self.filtered) - docs_count
-        count = (f"{images} img · {docs_count} doc" if docs_count
-                 else f"{len(self.filtered)}")
-        if self.scan_depth.get() != 0:
-            folders = len({e.subfolder for e in self.filtered})
-            if folders > 1:
-                count += f" · {folders} dirs"
-        self.count_var.set(count)
+        self._update_count()
 
         if size:
             self._queue_thumbnails(size)
@@ -949,6 +1028,31 @@ class ViewerWindow(tk.Toplevel):
             else:
                 self.current = fresh
 
+    def _update_count(self) -> None:
+        """Refresh the count beside the FILES header.
+
+        Two forms, chosen by the width the user has dragged the list to: the
+        breakdown when it fits, the bare total when it does not. Tk labels do
+        not ellipsize, so the alternative to shortening is text sliding under
+        the header and off the edge.
+        """
+        total = len(self.filtered)
+        if self._sidebar_px < COUNT_COMPACT_BELOW:
+            count = str(total)
+        else:
+            docs_count = sum(1 for e in self.filtered if e.kind == D.KIND_DOC)
+            images = total - docs_count
+            count = f"{images} img · {docs_count} doc" if docs_count else str(total)
+            if self.scan_depth.get() != 0:
+                folders = len({e.subfolder for e in self.filtered})
+                if folders > 1:
+                    count += f" · {folders} dirs"
+        if self._scan_truncated:
+            # The toast that said so has long since faded, and a listing that
+            # is not the whole truth has to keep saying so.
+            count += " ⚠"
+        self.count_var.set(count)
+
     def _ensure_group(self, subfolder: str, groups: dict[str, str]) -> str:
         """Return the tree node for ``subfolder``, creating missing ancestors.
 
@@ -962,9 +1066,29 @@ class ViewerWindow(tk.Toplevel):
         parent = self._ensure_group(head, groups) if head else ""
         iid = GROUP_PREFIX + subfolder
         self.tree.insert(parent, "end", iid=iid, text=f"  {tail or subfolder}",
-                         open=True, tags=("group",))
+                         open=subfolder not in self._collapsed, tags=("group",))
         groups[subfolder] = iid
         return iid
+
+    def _on_group_toggle(self, _event=None) -> None:
+        """Record which folders the user collapsed.
+
+        The list is rebuilt whenever the visible set changes, which - with a
+        plotting script writing into the folder - is every few seconds. Without
+        this, the folder just collapsed would spring straight back open.
+        """
+        focused = self.tree.focus()
+        if not focused.startswith(GROUP_PREFIX):
+            return
+        subfolder = focused[len(GROUP_PREFIX):]
+        try:
+            is_open = bool(self.tree.item(focused, "open"))
+        except tk.TclError:
+            return
+        if is_open:
+            self._collapsed.discard(subfolder)
+        else:
+            self._collapsed.add(subfolder)
 
     def _highlight(self, index: int) -> None:
         """Select a row without triggering a reload."""
@@ -1538,7 +1662,11 @@ class ViewerWindow(tk.Toplevel):
         self._probe_text = text
         self.probe_var.set(text)
         try:
-            self.swatch.configure(background=colour or self.palette.panel)
+            if colour:
+                self.swatch.configure(background=colour)
+                self.swatch.grid()
+            else:
+                self.swatch.grid_remove()
         except tk.TclError:
             pass
 
@@ -2007,6 +2135,31 @@ class ViewerWindow(tk.Toplevel):
             self.toast("Registering file types…")
         except Exception as exc:
             messagebox.showerror("Registration failed", str(exc), parent=self)
+
+    def _install_placeholder(self, entry: ttk.Entry, variable: tk.StringVar,
+                             text: str) -> None:
+        """Draw grey prompt text over an empty entry.
+
+        Tk has no placeholder option. The obvious implementation - insert the
+        text and delete it on focus - is wrong here: the entry is backed by a
+        StringVar that drives the file filter, so the prompt would be typed
+        into the filter and empty the list. This puts a label *on top of* the
+        entry instead, so the variable is never written at all; clicking the
+        label just forwards focus to the entry underneath.
+        """
+        p = self.palette
+        hint = tk.Label(entry, text=text, background=p.panel_alt, foreground=p.muted,
+                        font="FVsmall", borderwidth=0, cursor="xterm")
+        hint.bind("<Button-1>", lambda _e: entry.focus_set())
+
+        def refresh(*_args) -> None:
+            if variable.get():
+                hint.place_forget()
+            else:
+                hint.place(x=9, rely=0.5, anchor="w")
+
+        variable.trace_add("write", refresh)
+        refresh()
 
     def focus_search(self) -> None:
         self.search_entry.focus_set()

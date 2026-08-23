@@ -1,4 +1,4 @@
-# Figure Viewer 2.1
+# Figure Viewer 2.2
 
 A fast, themed, folder-based viewer for **figures and PDFs** on Windows.
 Point it at a folder, keep it open, and let your analysis scripts overwrite the
@@ -77,6 +77,39 @@ off with `"single_instance": false` in the settings file.
 | PyMuPDF | PDF / SVG / EPS / XPS / CBZ / EPUB | `pip install pymupdf` |
 
 Without PyMuPDF the app still runs; PDFs are listed but show an install hint.
+
+---
+
+## What is new in 2.2
+
+A review pass over the interface, mostly removing things that were wrong rather
+than adding new ones.
+
+**The file list is a real tree.** `apply_theme` used to strip the expander
+element out of the Treeview layout, on the reasonable grounds that the sidebar
+was a flat list. Once 2.1 started grouping files by sub-folder, that left
+folders that could not be collapsed. There are now two list styles - flat
+without an expander, tree with one - and the sidebar switches between them with
+the shape of the listing, so a flat list still has no empty gutter down its left
+edge. Folders you collapse **stay** collapsed across the rescans that a running
+plotting script triggers.
+
+**The sidebar is resizable.** Drag the divider between the list and the canvas;
+double-click it to reset. The width is remembered, and the count beside `FILES`
+shortens rather than running off the edge when the panel is narrow.
+
+**Nothing reserves eleven characters any more.** ttk gives `Button` and
+`Menubutton` a default `-width` of `-11`, so every toolbar button was 139 px
+wide whether it said `Fit` or `Folder…`, and every menu title sat 150 px from
+the next. Setting natural widths tightened the menu bar into a menu bar and
+handed about 400 px back to the folder-path box.
+
+**Smaller things.** Snip and Auto-reload no longer look alike: a modal state
+that changes what dragging does is painted in full accent, a persistent
+preference only quietly lit. The details panel scrolls instead of silently
+clipping long PDF metadata. The colour swatch appears only while the pointer is
+over the image, instead of sitting in the status bar as an empty box. The search
+box says what it does. A capped listing keeps saying so.
 
 ---
 
@@ -191,6 +224,7 @@ Press **F1** in the app for the full list. The essentials:
 | `Ctrl+N` / `Ctrl+O` | New window / open folder |
 | `Ctrl+1` `Ctrl+2` `Ctrl+3` | Images / PDFs / everything |
 | `Ctrl+Shift+R` | Include subfolders / this folder only |
+| Drag the divider | Resize the file list (double-click resets) |
 | `Ctrl+B` `Ctrl+I` `Ctrl+T` | Sidebar / details / theme |
 | `F5` `F9` `F11` | Rescan / slideshow / full screen |
 

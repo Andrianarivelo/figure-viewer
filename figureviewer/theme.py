@@ -88,6 +88,22 @@ LIGHT = Palette(
 
 PALETTES = {"dark": DARK, "light": LIGHT}
 
+#: File-list width limits, in pixels. These size the whole sidebar frame -
+#: padding and scrollbar included - not just the name column, so the default is
+#: the width the panel used to request for itself. The minimum still fits a
+#: short name plus a thumbnail; the maximum stops a stray drag from swallowing
+#: the canvas. Defined here because both app.py (for the stored default) and
+#: viewer.py (for the drag limits) need them, and keeping two copies is exactly
+#: how they drifted apart the first time.
+SIDEBAR_MIN = 190
+SIDEBAR_MAX = 900
+SIDEBAR_DEFAULT = 296
+
+#: Treeview style names for the file list. ``LIST_FLAT`` has no expander
+#: element; ``LIST_TREE`` keeps it, for a grouped multi-level listing.
+LIST_FLAT = "Flat.Treeview"
+LIST_TREE = "Tree.Treeview"
+
 
 def enable_dpi_awareness() -> float:
     """Make the process DPI aware and return the screen scale factor.
@@ -164,6 +180,11 @@ def configure_list_density(root: tk.Misc, thumb_size: int, density: str = "compa
     style = ttk.Style(root)
     style.configure("Treeview", rowheight=max(15, height), font=font)
     style.configure("Treeview.Item", padding=(0, 0))
+    # ttk resolves style options up the dotted name, so LIST_FLAT / LIST_TREE
+    # would inherit these anyway - except rowheight, which the treeview reads
+    # from its own style name only. Set it on all three.
+    for name in (LIST_FLAT, LIST_TREE):
+        style.configure(name, rowheight=max(15, height), font=font)
 
 
 def apply_theme(root: tk.Misc, palette: Palette) -> None:
@@ -189,6 +210,11 @@ def apply_theme(root: tk.Misc, palette: Palette) -> None:
     style.configure("Toolbar.TFrame", background=p.panel)
     style.configure("Status.TFrame", background=p.panel)
     style.configure("Rule.TFrame", background=p.border)
+    # The drag handle between the file list and the canvas. Invisible at rest -
+    # a 5 px coloured bar would be heavier than the hairline it sits next to -
+    # and lit on hover, with the resize cursor doing the real signalling.
+    style.configure("Sash.TFrame", background=p.bg)
+    style.configure("SashActive.TFrame", background=p.accent)
 
     # --- labels -----------------------------------------------------------
     style.configure("TLabel", background=p.bg, foreground=p.text)
@@ -200,26 +226,33 @@ def apply_theme(root: tk.Misc, palette: Palette) -> None:
     style.configure("Accent.TLabel", background=p.panel, foreground=p.accent, font="FVuiBold")
 
     # --- buttons ----------------------------------------------------------
+    # width=0 is not cosmetic pedantry. ttk gives Button and Menubutton a
+    # default `-width` of -11, i.e. "at least eleven characters wide", so a
+    # button reading "Fit" reserved the same 139 px as one reading "Folder…"
+    # and every menu title sat 150 px from the next. Natural widths make the
+    # toolbar read as groups instead of a scattering, and hand the ~400 px they
+    # were wasting to the folder-path box, which is the one field in this
+    # window that genuinely wants the room.
     style.configure("TButton", background=p.panel_alt, foreground=p.text,
-                    padding=(10, 5), relief="flat", anchor="center")
+                    padding=(10, 5), relief="flat", anchor="center", width=0)
     style.map("TButton",
               background=[("pressed", p.accent), ("active", p.hover), ("disabled", p.panel)],
               foreground=[("pressed", p.accent_text), ("disabled", p.muted)])
 
     style.configure("Tool.TButton", background=p.panel, foreground=p.text,
-                    padding=(8, 5), relief="flat")
+                    padding=(9, 5), relief="flat", width=0)
     style.map("Tool.TButton",
               background=[("pressed", p.accent), ("active", p.hover), ("disabled", p.panel)],
               foreground=[("pressed", p.accent_text), ("disabled", p.muted)])
 
     style.configure("Accent.TButton", background=p.accent, foreground=p.accent_text,
-                    padding=(10, 5), relief="flat")
+                    padding=(10, 5), relief="flat", width=0)
     style.map("Accent.TButton", background=[("active", p.accent), ("pressed", p.accent)])
 
     # Segmented control: radio buttons that look like a joined button group.
     # The indicator element is dropped from the layout entirely - setting
     # `indicatorsize=0` still leaves a gap in the clam theme.
-    for name in ("Segment.TRadiobutton", "Toggle.TCheckbutton"):
+    for name in ("Segment.TRadiobutton", "Toggle.TCheckbutton", "Modal.TCheckbutton"):
         element = "Radiobutton" if "Radio" in name else "Checkbutton"
         style.layout(name, [
             (f"{element}.padding", {"sticky": "nswe", "children": [
@@ -232,9 +265,23 @@ def apply_theme(root: tk.Misc, palette: Palette) -> None:
               background=[("selected", p.accent), ("active", p.hover)],
               foreground=[("selected", p.accent_text), ("active", p.text)])
 
+    # Two kinds of toggle, deliberately not styled alike.
+    #
+    # Toggle: a persistent preference such as "Auto reload". It is on almost
+    # all the time, so painting it in full accent put a permanent shout in the
+    # toolbar. It now reads as quietly lit rather than highlighted.
     style.configure("Toggle.TCheckbutton", background=p.panel, foreground=p.muted,
                     padding=(8, 4), relief="flat", anchor="center")
     style.map("Toggle.TCheckbutton",
+              background=[("selected", p.select), ("active", p.hover)],
+              foreground=[("selected", p.accent), ("active", p.text)])
+
+    # Modal: a state that changes what the mouse does, such as Snip. This one
+    # must be impossible to miss, because forgetting you are in it is the whole
+    # failure mode.
+    style.configure("Modal.TCheckbutton", background=p.panel, foreground=p.muted,
+                    padding=(8, 4), relief="flat", anchor="center")
+    style.map("Modal.TCheckbutton",
               background=[("selected", p.accent), ("active", p.hover)],
               foreground=[("selected", p.accent_text), ("active", p.text)])
 
@@ -273,12 +320,38 @@ def apply_theme(root: tk.Misc, palette: Palette) -> None:
     style.configure("Treeview.Heading", background=p.panel, foreground=p.muted,
                     relief="flat", font="FVsmall", padding=(6, 4))
     style.map("Treeview.Heading", background=[("active", p.hover)])
-    style.layout("Treeview.Item", [
+    # The sidebar is a flat list *or* a folder tree, depending on the scan
+    # depth, and the two want different item layouts. ttk resolves an item
+    # layout per style name ("<Style>.Item"), so both can coexist and the
+    # widget just switches its `style` option - see ViewerWindow._apply_filter.
+    #
+    # Flat: no expander element at all, so nothing reserves an empty gutter to
+    # the left of every file name.
+    # Tree: the expander restored, because a folder you cannot collapse is not
+    # a tree, it is an indented list.
+    flat_item = [
         ("Treeitem.padding", {"sticky": "nswe", "children": [
             ("Treeitem.image", {"side": "left", "sticky": ""}),
             ("Treeitem.text", {"side": "left", "sticky": ""}),
         ]}),
-    ])  # drop the expander column: the sidebar is a flat list
+    ]
+    tree_item = [
+        ("Treeitem.padding", {"sticky": "nswe", "children": [
+            ("Treeitem.indicator", {"side": "left", "sticky": ""}),
+            ("Treeitem.image", {"side": "left", "sticky": ""}),
+            ("Treeitem.text", {"side": "left", "sticky": ""}),
+        ]}),
+    ]
+    style.layout("Treeview.Item", flat_item)
+    for name, item_layout in ((LIST_FLAT, flat_item), (LIST_TREE, tree_item)):
+        style.layout(name, style.layout("Treeview"))
+        style.layout(f"{name}.Item", item_layout)
+    # A sidebar this narrow cannot afford ttk's default 20 px of indent per
+    # level once a scan is three folders deep.
+    try:
+        style.configure(LIST_TREE, indent=14)
+    except tk.TclError:
+        pass
 
     # --- scrollbars -------------------------------------------------------
     for orient in ("Vertical", "Horizontal"):
@@ -294,8 +367,11 @@ def apply_theme(root: tk.Misc, palette: Palette) -> None:
     style.configure("Sash", sashthickness=6, gripcount=0, background=p.border)
     style.configure("TProgressbar", background=p.accent, troughcolor=p.panel_alt,
                     bordercolor=p.panel_alt, lightcolor=p.accent, darkcolor=p.accent)
+    # width=0: see the note on TButton. Without it every menu title reserved
+    # eleven characters, so "Go" sat 150 px from "Tools" and the bar read as
+    # six scattered words rather than a menu.
     style.configure("Menubar.TMenubutton", background=p.panel, foreground=p.text,
-                    padding=(10, 5), relief="flat", arrowsize=0)
+                    padding=(11, 5), relief="flat", arrowsize=0, width=0)
     style.map("Menubar.TMenubutton",
               background=[("active", p.hover), ("pressed", p.hover)],
               foreground=[("active", p.text)])
