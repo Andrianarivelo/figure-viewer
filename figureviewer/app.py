@@ -69,6 +69,10 @@ DEFAULT_SETTINGS: dict = {
     "export_dpi": 300.0,
     "slideshow_secs": 4.0,
     "snip_sticky": False,
+    # Video starts immediately on selection by default. Loop is opt-in and is
+    # also exposed directly on the transport bar.
+    "video_autoplay": True,
+    "video_loop": False,
 }
 
 
@@ -340,6 +344,10 @@ class App:
             pass
         for window in list(self.windows):
             try:
+                window._stop_video_session()
+            except Exception:
+                pass
+            try:
                 window.destroy()
             except Exception:
                 pass
@@ -384,6 +392,10 @@ class App:
                  for w in list(self.windows)]
         for window in list(self.windows):
             window._destroyed = True
+            try:
+                window._stop_video_session()
+            except Exception:
+                pass
             try:
                 window.destroy()
             except Exception:

@@ -1,9 +1,9 @@
-# Figure Viewer 2.2
+# Figure Viewer 3.0
 
-A fast, themed, folder-based viewer for **figures and PDFs** on Windows.
+A fast, themed, folder-based viewer for **images, videos, and PDFs** on Windows.
 Point it at a folder, keep it open, and let your analysis scripts overwrite the
 files underneath: the viewer reloads them automatically without losing your
-zoom, your pan or your place in the list.
+zoom, your pan, your playback position, or your place in the list.
 
 ---
 
@@ -15,6 +15,7 @@ zoom, your pan or your place in the list.
 ```powershell
 pythonw.exe D:\Apps\figure-viewer\figure_viewer_app.py "E:\group\1\figures\v3_n6"
 pythonw.exe D:\Apps\figure-viewer\figure_viewer_app.py "C:\some\report.pdf"
+pythonw.exe D:\Apps\figure-viewer\figure_viewer_app.py "C:\some\simulation.mp4"
 ```
 
 Startup failures are written to `figure_viewer_error.log` and shown in a dialog,
@@ -40,19 +41,20 @@ The interpreter is chosen at install time by probing candidates for Pillow and
 tkinter, rather than being hardcoded. Override it with the
 `FIGURE_VIEWER_PYTHON` environment variable if you need a specific one.
 
-### Make it the default image and PDF viewer
+### Make it the default media and PDF viewer
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File D:\Apps\figure-viewer\register_file_types.ps1
 ```
 
-or, from inside the app, **Tools > Set as Default Image / PDF Viewer**.
+or, from inside the app, **Tools > Set as Default Media / PDF Viewer**.
 
-The script registers Figure Viewer with Windows for `.png .jpg .jpeg .jpe .tif
-.tiff .bmp .gif .webp .jp2 .ppm .pgm .pdf` (add `-IncludeVector` for `.svg .eps
-.xps .oxps .cbz .epub`, or `-Extensions png,pdf` to pick your own). Everything
-it writes lives under `HKEY_CURRENT_USER`, so no administrator rights are
-needed, and `unregister_file_types.ps1` removes all of it.
+The script registers Figure Viewer with Windows for the supported raster image
+types, PDF, and common video types such as MP4, MOV, AVI, MKV, WebM, WMV, MPEG,
+MTS, and transport streams. Add `-IncludeVector` for SVG, EPS, XPS, CBZ, and
+EPUB, or `-Extensions png,pdf,mp4` to choose an exact set. Everything it writes
+lives under `HKEY_CURRENT_USER`, so no administrator rights are needed, and
+`unregister_file_types.ps1` removes all of it.
 
 **One click is left over, and that is Windows' doing, not an oversight.** Since
 Windows 8 the actual default for a file type is stored in a `UserChoice` key
@@ -75,8 +77,58 @@ off with `"single_instance": false` in the settings file.
 |---|---|---|
 | Pillow | everything | `pip install pillow` |
 | PyMuPDF | PDF / SVG / EPS / XPS / CBZ / EPUB | `pip install pymupdf` |
+| OpenCV | in-app video decoding through FFmpeg | `pip install opencv-python` |
 
-Without PyMuPDF the app still runs; PDFs are listed but show an install hint.
+PyMuPDF and OpenCV are optional. Missing support produces an installation hint
+for that media type without preventing the rest of the app from starting.
+
+OpenCV provides efficient in-app video decoding but does not output audio. The
+transport and details panel state this explicitly. For a clip whose soundtrack
+matters, use **Open in Default App**.
+
+---
+
+## What is new in 3.0
+
+**Fast in-app video.** MP4, MOV, AVI, MKV, WebM, WMV, MPEG, OGV, MTS, M2TS,
+and TS files now appear beside figures and PDFs. The transport bar provides
+play, pause, five-second seeking, direct scrubbing, stop, and loop. `Space` and
+double-click toggle playback. Left and right seek while a video is selected;
+up and down continue to navigate files. The current full-resolution frame can
+be copied or saved.
+
+Playback does not run through the still-image cache. One dedicated thread owns
+the OpenCV/FFmpeg decoder, resizes frames to the viewport before handing them to
+Tk, drops stale frames when presentation falls behind, and keeps only one
+unpainted frame. This bounds memory and latency instead of allowing a playback
+queue to grow. OpenCV is imported lazily, so image/PDF startup does not pay the
+video backend's import cost.
+
+**A coherent visual system.** The toolbar is now arranged into two clear rows,
+with compact raised control groups and deterministic DPI-aware icons rather
+than font-dependent symbols. The file and details panels have matching header
+icons, videos have their own cyan list identity, and the transport has a themed
+timeline. A generated image/video-aware mark supplies the app branding and a
+new multi-resolution Windows icon; small functional icons remain code-native
+so they stay sharp and consistent.
+
+### Performance validation
+
+Version 3.0 was benchmarked in 16 interleaved paired runs against the committed
+2.2 code on the same disk. A paired Wilcoxon signed-rank test was selected
+without assuming normally distributed timing differences.
+
+| Existing path | 2.2 median | 3.0 median | Median change | Paired p |
+|---|---:|---:|---:|---:|
+| Cold document import | 326.0 ms | 325.9 ms | +1.2% paired median | 0.495 |
+| 2,400-file folder scan | 119.7 ms | 106.5 ms | -0.9% paired median | 0.706 |
+
+Neither existing path changed significantly. The 1080p video test delivered
+its first frame in 65 ms, advanced at 1.015x real time, presented 29.9 frames
+per second from a 30 fps source, and dropped no unpainted mailbox frames.
+See the [benchmark figure](benchmarks/results/performance_v3.png),
+[raw timings](benchmarks/results/performance_raw.csv), and
+[reproducible script](benchmarks/benchmark_v3.py).
 
 ---
 
@@ -213,16 +265,18 @@ Press **F1** in the app for the full list. The essentials:
 
 | Key | Action |
 |---|---|
-| `←` `→` `↑` `↓` | Previous / next file |
+| `↑` `↓` | Previous / next file |
+| `←` `→` | Previous / next file, or seek 5 seconds in video |
+| `Space` / double click | Play / pause video |
 | `PageUp` `PageDown` | Previous / next page |
 | Wheel | Zoom towards the pointer |
 | Drag / middle-drag | Pan |
 | Double click | Toggle fit page / 100 % |
 | `S` | Snip a region to the clipboard |
-| `Ctrl+C` | Copy the whole page |
+| `Ctrl+C` | Copy the whole page or current video frame |
 | `Ctrl+Shift+V` | Copy exactly what is on screen |
 | `Ctrl+N` / `Ctrl+O` | New window / open folder |
-| `Ctrl+1` `Ctrl+2` `Ctrl+3` | Images / PDFs / everything |
+| `Ctrl+1` `Ctrl+2` `Ctrl+3` `Ctrl+4` | Images / PDFs / videos / everything |
 | `Ctrl+Shift+R` | Include subfolders / this folder only |
 | Drag the divider | Resize the file list (double-click resets) |
 | `Ctrl+B` `Ctrl+I` `Ctrl+T` | Sidebar / details / theme |
@@ -236,15 +290,20 @@ Press **F1** in the app for the full list. The essentials:
 figure_viewer_app.py       entry point (name kept for the existing shortcuts)
 launch_figure_viewer.py    logging launcher used by the .bat and shortcuts
 install_shortcuts.ps1      Desktop / Start Menu shortcuts
-register_file_types.ps1    register with Windows as an image and PDF viewer
+register_file_types.ps1    register with Windows as a media and PDF viewer
 unregister_file_types.ps1  undo the above
 viewer_python.ps1          shared "which Python has Pillow?" probe
 figureviewer/
     theme.py               palettes, ttk styling, themed menu bar, tooltips
+    icons.py               DPI-aware functional control icons
     winclip.py             Win32 clipboard (PNG + DIBV5 + DIB + HDROP + text)
     docs.py                scanning, document model, caches, worker pool
+    video.py               bounded threaded OpenCV playback and thumbnails
     viewer.py              the viewer window: canvas, view transform, commands
     app.py                 Tk root, settings, window registry, single instance
 ```
 
 Settings live in `%APPDATA%\FigureViewerApp\settings.json`.
+
+Generated branding lives in `assets/figure-viewer-mark.png`; the 256 px runtime
+copy and `figure-viewer.ico` are derived from that master.

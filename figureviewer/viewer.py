@@ -41,8 +41,10 @@ from PIL import Image, ImageOps, ImageTk
 
 from . import APP_NAME, APP_VERSION
 from . import docs as D
+from . import video as V
 from . import winclip
-from .theme import (DENSITIES, LIST_FLAT, LIST_TREE, SIDEBAR_DEFAULT, SIDEBAR_MAX,
+from .icons import IconFactory
+from .theme import (LIST_FLAT, LIST_TREE, SIDEBAR_DEFAULT, SIDEBAR_MAX,
                     SIDEBAR_MIN, MenuBar, Palette, bind_tooltip,
                     configure_list_density, style_menu, toolbar_button)
 
@@ -144,6 +146,7 @@ class ViewerWindow(tk.Toplevel):
         super().__init__(app.root)
         self.app = app
         self.palette: Palette = app.palette
+        self.icons = IconFactory(self, self.palette, app.scale)
         self.folder = folder
         self.pending_select = select
 
@@ -169,7 +172,9 @@ class ViewerWindow(tk.Toplevel):
         self._toast_job: Optional[str] = None
         self._slideshow_job: Optional[str] = None
         self._resize_job: Optional[str] = None
+        self._video_job: Optional[str] = None
         self._photo: Optional[ImageTk.PhotoImage] = None
+        self._video_photo: Optional[ImageTk.PhotoImage] = None
         self._minimap_photo: Optional[ImageTk.PhotoImage] = None
         self._minimap_key: Optional[tuple] = None
         self._minimap_rect: Optional[tuple[float, float, float, float]] = None
@@ -198,6 +203,9 @@ class ViewerWindow(tk.Toplevel):
         #: every time a figure is overwritten - does not spring them open again.
         self._collapsed: set[str] = set()
         self._sash_origin: Optional[tuple[int, int]] = None
+        self._video_session: Optional[V.VideoSession] = None
+        self._video_scrubbing = False
+        self._video_last_state = ""
         self._sidebar_px = max(SIDEBAR_MIN, min(SIDEBAR_MAX,
                                int(app.settings.get("sidebar_width", SIDEBAR_DEFAULT))))
         self._last_depth = int(app.settings.get("scan_depth", 0)) or D.DEPTH_UNLIMITED
@@ -210,6 +218,9 @@ class ViewerWindow(tk.Toplevel):
         self.page_var = tk.StringVar(value="")
         self.probe_var = tk.StringVar(value="")
         self.count_var = tk.StringVar(value="")
+        self.video_position = tk.DoubleVar(value=0.0)
+        self.video_time_var = tk.StringVar(value="0:00 / 0:00")
+        self.video_meta_var = tk.StringVar(value="VIDEO")
 
         self.kind_filter = tk.StringVar(value=settings.get("filter", D.FILTER_ALL))
         if select is not None:
@@ -238,6 +249,8 @@ class ViewerWindow(tk.Toplevel):
         self.slideshow_secs = tk.DoubleVar(value=float(settings.get("slideshow_secs", 4.0)))
         self.slideshow_on = tk.BooleanVar(value=False)
         self.snip_mode = tk.BooleanVar(value=False)
+        self.video_loop = tk.BooleanVar(value=bool(settings.get("video_loop", False)))
+        self.video_autoplay = tk.BooleanVar(value=bool(settings.get("video_autoplay", True)))
 
         self.title(f"{APP_NAME} - {folder}")
         self._apply_icon()
@@ -285,65 +298,92 @@ class ViewerWindow(tk.Toplevel):
         # --- themed menu bar ------------------------------------------------
         self.menubar = MenuBar(self, p)
         self.menubar.grid(row=0, column=0, sticky="ew")
+        brand = self.icons.brand(
+            self.app.app_dir / "assets" / "figure-viewer-mark-256.png", 21
+        )
+        if brand is not None:
+            ttk.Label(self.menubar, image=brand, style="Panel.TLabel").pack(
+                side="left", padx=(9, 3), pady=2
+            )
         ttk.Frame(self, style="Rule.TFrame", height=1).grid(row=1, column=0, sticky="ew")
 
         # --- toolbar --------------------------------------------------------
         bar = ttk.Frame(self, style="Toolbar.TFrame", padding=(10, 7))
         bar.grid(row=2, column=0, sticky="ew")
-        bar.columnconfigure(3, weight=1)
-        col = 0
+        bar.columnconfigure(2, weight=1)
 
-        nav = ttk.Frame(bar, style="Toolbar.TFrame")
-        nav.grid(row=0, column=col, padx=(0, 10)); col += 1
-        toolbar_button(nav, "◀", self.previous_file, p, "Previous file  (Left)", width=3).pack(side="left")
-        toolbar_button(nav, "▶", self.next_file, p, "Next file  (Right)", width=3).pack(side="left", padx=(2, 0))
-        toolbar_button(nav, "⟳", self.reload_all, p, "Rescan folder and reload  (F5)", width=3).pack(side="left", padx=(6, 0))
+        nav = ttk.Frame(bar, style="ToolbarGroup.TFrame", padding=2)
+        nav.grid(row=0, column=0, padx=(0, 8))
+        toolbar_button(nav, "", self.previous_file, p, "Previous file  (Left)",
+                       style="Icon.TButton", image=self.icons.get("previous")).pack(side="left")
+        toolbar_button(nav, "", self.next_file, p, "Next file  (Right)",
+                       style="Icon.TButton", image=self.icons.get("next")).pack(side="left")
+        toolbar_button(nav, "", self.reload_all, p, "Rescan folder and reload  (F5)",
+                       style="Icon.TButton", image=self.icons.get("reload")).pack(side="left")
 
-        toolbar_button(bar, "Folder…", self.choose_folder, p,
-                       "Choose another folder  (Ctrl+O)").grid(row=0, column=col, padx=(0, 6)); col += 1
-        toolbar_button(bar, "↑", self.go_parent, p, "Parent folder  (Backspace)", width=3).grid(
-            row=0, column=col, padx=(0, 8)); col += 1
+        folder_actions = ttk.Frame(bar, style="Toolbar.TFrame")
+        folder_actions.grid(row=0, column=1, padx=(0, 8))
+        toolbar_button(folder_actions, "Folder", self.choose_folder, p,
+                       "Choose another folder  (Ctrl+O)", image=self.icons.get("folder"),
+                       compound="left").pack(side="left")
+        toolbar_button(folder_actions, "", self.go_parent, p,
+                       "Parent folder  (Backspace)", style="Icon.TButton",
+                       image=self.icons.get("up")).pack(side="left", padx=(3, 0))
 
         entry = ttk.Entry(bar, textvariable=self.folder_var)
-        entry.grid(row=0, column=col, sticky="ew", padx=(0, 8)); col += 1
+        entry.grid(row=0, column=2, sticky="ew", padx=(0, 8))
         entry.bind("<Return>", lambda _e: self.open_typed_folder())
         self.folder_entry = entry
 
         segment = ttk.Frame(bar, style="Card.TFrame", padding=1)
-        segment.grid(row=0, column=col, padx=(0, 10)); col += 1
+        segment.grid(row=0, column=3)
         for label, value, tip in (("Images", D.FILTER_IMAGES, "Show images only  (Ctrl+1)"),
                                   ("PDF", D.FILTER_DOCS, "Show PDF and vector documents  (Ctrl+2)"),
-                                  ("All", D.FILTER_ALL, "Show everything  (Ctrl+3)")):
+                                  ("Video", D.FILTER_VIDEOS, "Show videos only  (Ctrl+3)"),
+                                  ("All", D.FILTER_ALL, "Show everything  (Ctrl+4)")):
             radio = ttk.Radiobutton(segment, text=label, value=value, variable=self.kind_filter,
                                     style="Segment.TRadiobutton", takefocus=False,
                                     command=self.rescan)
             radio.pack(side="left")
             bind_tooltip(radio, tip, p)
 
-        zoom = ttk.Frame(bar, style="Toolbar.TFrame")
-        zoom.grid(row=0, column=col, padx=(0, 10)); col += 1
-        toolbar_button(zoom, "−", lambda: self.zoom_by(1 / ZOOM_STEP), p, "Zoom out  (Ctrl+-)", width=3).pack(side="left")
-        toolbar_button(zoom, "+", lambda: self.zoom_by(ZOOM_STEP), p, "Zoom in  (Ctrl++)", width=3).pack(side="left", padx=(2, 0))
-        toolbar_button(zoom, "Fit", self.fit_page, p, "Fit the whole page  (Ctrl+0)").pack(side="left", padx=(6, 0))
-        toolbar_button(zoom, "1:1", self.actual_size, p,
-                       "Actual size, 100 %  (Ctrl+Shift+0)").pack(side="left", padx=(2, 0))
+        actionbar = ttk.Frame(bar, style="Toolbar.TFrame")
+        actionbar.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(6, 0))
 
-        rot = ttk.Frame(bar, style="Toolbar.TFrame")
-        rot.grid(row=0, column=col, padx=(0, 10)); col += 1
-        toolbar_button(rot, "↺", lambda: self.rotate(-90), p, "Rotate left  (Ctrl+[)", width=3).pack(side="left")
-        toolbar_button(rot, "↻", lambda: self.rotate(90), p, "Rotate right  (Ctrl+])", width=3).pack(side="left", padx=(2, 0))
+        zoom = ttk.Frame(actionbar, style="ToolbarGroup.TFrame", padding=2)
+        zoom.pack(side="left", padx=(0, 8))
+        toolbar_button(zoom, "", lambda: self.zoom_by(1 / ZOOM_STEP), p,
+                       "Zoom out  (Ctrl+-)", style="Icon.TButton",
+                       image=self.icons.get("zoom_out")).pack(side="left")
+        toolbar_button(zoom, "", lambda: self.zoom_by(ZOOM_STEP), p,
+                       "Zoom in  (Ctrl++)", style="Icon.TButton",
+                       image=self.icons.get("zoom_in")).pack(side="left")
+        toolbar_button(zoom, "Fit", self.fit_page, p, "Fit the whole page  (Ctrl+0)",
+                       style="Icon.TButton", image=self.icons.get("fit")).pack(side="left")
+        toolbar_button(zoom, "1:1", self.actual_size, p,
+                       "Actual size, 100 %  (Ctrl+Shift+0)", style="Icon.TButton",
+                       image=self.icons.get("actual")).pack(side="left")
+
+        rot = ttk.Frame(actionbar, style="ToolbarGroup.TFrame", padding=2)
+        rot.pack(side="left", padx=(0, 8))
+        toolbar_button(rot, "", lambda: self.rotate(-90), p, "Rotate left  (Ctrl+[)",
+                       style="Icon.TButton", image=self.icons.get("rotate_left")).pack(side="left")
+        toolbar_button(rot, "", lambda: self.rotate(90), p, "Rotate right  (Ctrl+])",
+                       style="Icon.TButton", image=self.icons.get("rotate_right")).pack(side="left")
 
         # Modal.TCheckbutton, not Toggle: snip mode changes what dragging does,
         # so it has to be unmistakable while it is on.
         self.snip_button = ttk.Checkbutton(
-            bar, text="✂ Snip", variable=self.snip_mode, style="Modal.TCheckbutton",
-            takefocus=False, command=self._snip_mode_changed)
-        self.snip_button.grid(row=0, column=col, padx=(0, 8)); col += 1
+            actionbar, text="Snip", image=self.icons.get("snip"), compound="left",
+            variable=self.snip_mode, style="Modal.TCheckbutton", takefocus=False,
+            command=self._snip_mode_changed)
+        self.snip_button.pack(side="left", padx=(0, 8))
         bind_tooltip(self.snip_button, "Drag a rectangle to copy that region  (S)", p)
 
-        auto = ttk.Checkbutton(bar, text="Auto ⟳", variable=self.auto_reload,
+        auto = ttk.Checkbutton(actionbar, text="Auto reload", image=self.icons.get("auto"),
+                               compound="left", variable=self.auto_reload,
                                style="Toggle.TCheckbutton", takefocus=False)
-        auto.grid(row=0, column=col, padx=(0, 0)); col += 1
+        auto.pack(side="left")
         bind_tooltip(auto, "Reload the image automatically when the file changes on disk", p)
 
         # --- body: sidebar | canvas | info ---------------------------------
@@ -362,9 +402,11 @@ class ViewerWindow(tk.Toplevel):
         stage.grid(row=0, column=2, sticky="nsew")
         stage.rowconfigure(0, weight=1)
         stage.columnconfigure(0, weight=1)
+        self.stage = stage
         self.canvas = tk.Canvas(stage, background=p.canvas, highlightthickness=0,
                                 borderwidth=0, takefocus=True)
         self.canvas.grid(row=0, column=0, sticky="nsew")
+        self.video_controls = self._build_video_controls(stage)
 
         self.info_panel = self._build_info_panel(body)
 
@@ -388,6 +430,74 @@ class ViewerWindow(tk.Toplevel):
         self._bind_canvas()
         self._apply_layout()
 
+    def _build_video_controls(self, master: tk.Misc) -> ttk.Frame:
+        """Create the transport bar once and reveal it only for videos."""
+        p = self.palette
+        frame = ttk.Frame(master, style="Transport.TFrame", padding=(10, 7))
+        frame.grid(row=1, column=0, sticky="ew")
+        frame.columnconfigure(5, weight=1)
+
+        toolbar_button(frame, "", lambda: self.seek_video(-5), p,
+                       "Back 5 seconds  (Left)", style="Transport.TButton",
+                       image=self.icons.get("back5")).grid(row=0, column=0)
+        self.video_play_button = toolbar_button(
+            frame, "", self.toggle_video, p, "Play or pause  (Space)",
+            style="Transport.TButton", image=self.icons.get("play")
+        )
+        self.video_play_button.grid(row=0, column=1, padx=2)
+        toolbar_button(frame, "", lambda: self.seek_video(5), p,
+                       "Forward 5 seconds  (Right)", style="Transport.TButton",
+                       image=self.icons.get("forward5")).grid(row=0, column=2)
+        toolbar_button(frame, "", self.stop_video_playback, p,
+                       "Stop and return to the first frame", style="Transport.TButton",
+                       image=self.icons.get("stop")).grid(row=0, column=3, padx=(2, 8))
+
+        self.video_time_label = ttk.Label(
+            frame, textvariable=self.video_time_var, style="Transport.TLabel",
+            width=14, anchor="e",
+        )
+        self.video_time_label.grid(row=0, column=4, padx=(0, 8))
+        scale = ttk.Scale(frame, from_=0.0, to=1.0, orient="horizontal",
+                          variable=self.video_position, takefocus=False,
+                          style="Media.Horizontal.TScale")
+        scale.grid(row=0, column=5, sticky="ew", padx=(0, 10))
+        scale.bind("<ButtonPress-1>", self._video_seek_press)
+        scale.bind("<ButtonRelease-1>", self._video_seek_release)
+        self.video_scale = scale
+
+        loop = ttk.Checkbutton(
+            frame, text="Loop", image=self.icons.get("loop"), compound="left",
+            variable=self.video_loop, style="Transport.TCheckbutton", takefocus=False,
+            command=self._video_loop_changed,
+        )
+        loop.grid(row=0, column=6, padx=(0, 10))
+        self.video_loop_button = loop
+        bind_tooltip(loop, "Restart automatically when the video ends", p)
+
+        meta = ttk.Label(frame, textvariable=self.video_meta_var, style="Media.TLabel")
+        meta.grid(row=0, column=7)
+        self.video_meta_label = meta
+        bind_tooltip(meta, "OpenCV uses FFmpeg for fast in-app video. Audio is not available.", p)
+        frame.grid_remove()
+        return frame
+
+    def _adapt_video_controls(self, width: int) -> None:
+        """Keep the timeline usable when both side panels narrow the stage."""
+        if not hasattr(self, "video_meta_label"):
+            return
+        if width >= 640:
+            self.video_meta_label.grid()
+        else:
+            self.video_meta_label.grid_remove()
+        if width >= 520:
+            self.video_loop_button.grid()
+        else:
+            self.video_loop_button.grid_remove()
+        if width >= 390:
+            self.video_time_label.grid()
+        else:
+            self.video_time_label.grid_remove()
+
     def _build_sidebar(self, master: tk.Misc) -> ttk.Frame:
         """File list with search, thumbnails and a count footer."""
         p = self.palette
@@ -398,7 +508,8 @@ class ViewerWindow(tk.Toplevel):
         header = ttk.Frame(frame, style="Panel.TFrame")
         header.grid(row=0, column=0, sticky="ew")
         header.columnconfigure(0, weight=1)
-        ttk.Label(header, text="FILES", style="Section.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(header, text="FILES", image=self.icons.get("files", tone="muted"),
+                  compound="left", style="Section.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(header, textvariable=self.count_var, style="Muted.TLabel").grid(row=0, column=1, sticky="e")
 
         search = ttk.Entry(frame, textvariable=self.search_var)
@@ -429,6 +540,7 @@ class ViewerWindow(tk.Toplevel):
         self.tree.bind("<<TreeviewOpen>>", self._on_group_toggle)
         self.tree.bind("<<TreeviewClose>>", self._on_group_toggle)
         self.tree.tag_configure("doc", foreground=self.palette.accent)
+        self.tree.tag_configure("video", foreground=self.palette.media)
         # Folder rows are headers, not files: semibold and muted, so three
         # levels of nesting still read as structure rather than more entries.
         self.tree.tag_configure("group", foreground=self.palette.muted, font="FVuiBold")
@@ -438,11 +550,14 @@ class ViewerWindow(tk.Toplevel):
         for index in range(3):
             actions.columnconfigure(index, weight=1)
         toolbar_button(actions, "Copy", self.copy_image, p,
-                       "Copy the full-resolution image  (Ctrl+C)").grid(row=0, column=0, sticky="ew", padx=(0, 3))
+                       "Copy the full-resolution image or current video frame  (Ctrl+C)",
+                       image=self.icons.get("copy")).grid(row=0, column=0, sticky="ew", padx=(0, 3))
         toolbar_button(actions, "Path", self.copy_path, p,
-                       "Copy the file path  (Ctrl+Shift+P)").grid(row=0, column=1, sticky="ew", padx=3)
+                       "Copy the file path  (Ctrl+Shift+P)",
+                       image=self.icons.get("path")).grid(row=0, column=1, sticky="ew", padx=3)
         toolbar_button(actions, "Open", self.open_default_app, p,
-                       "Open in the default application  (Enter)").grid(row=0, column=2, sticky="ew", padx=(3, 0))
+                       "Open in the default application  (Enter)",
+                       image=self.icons.get("external")).grid(row=0, column=2, sticky="ew", padx=(3, 0))
         return frame
 
     def _build_sash(self, master: tk.Misc) -> ttk.Frame:
@@ -498,7 +613,8 @@ class ViewerWindow(tk.Toplevel):
         frame = ttk.Frame(master, style="Panel.TFrame", padding=(12, 10))
         frame.rowconfigure(1, weight=1)
         frame.columnconfigure(0, weight=1)
-        ttk.Label(frame, text="DETAILS", style="Section.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(frame, text="DETAILS", image=self.icons.get("info", tone="muted"),
+                  compound="left", style="Section.TLabel").grid(row=0, column=0, sticky="w")
         text = tk.Text(frame, width=32, wrap="word", background=p.panel, foreground=p.text,
                        insertbackground=p.text, relief="flat", highlightthickness=0,
                        font="FVsmall", padx=0, pady=8, spacing1=1, spacing3=3, cursor="arrow")
@@ -531,7 +647,8 @@ class ViewerWindow(tk.Toplevel):
         file_menu.add_cascade(label="Recent Folders", menu=self.recent_menu)
         file_menu.add_command(label="Parent Folder", accelerator="Backspace", command=self.go_parent)
         file_menu.add_separator()
-        file_menu.add_command(label="Save Page As…", accelerator="Ctrl+S", command=self.save_page_as)
+        file_menu.add_command(label="Save Page / Frame As…", accelerator="Ctrl+S",
+                              command=self.save_page_as)
         file_menu.add_command(label="Save Snip As…", accelerator="Ctrl+Shift+S", command=self.save_snip_as)
         file_menu.add_command(label="Export All Pages…", command=self.export_all_pages)
         file_menu.add_separator()
@@ -542,7 +659,8 @@ class ViewerWindow(tk.Toplevel):
         file_menu.add_command(label="Exit", accelerator="Alt+F4", command=self.app.quit_all)
 
         edit_menu = self.menubar.add_menu("Edit", underline=0)
-        edit_menu.add_command(label="Copy Image", accelerator="Ctrl+C", command=self.copy_image)
+        edit_menu.add_command(label="Copy Image / Video Frame", accelerator="Ctrl+C",
+                              command=self.copy_image)
         edit_menu.add_command(label="Copy Visible View", accelerator="Ctrl+Shift+V", command=self.copy_view)
         edit_menu.add_command(label="Copy Last Snip", accelerator="Ctrl+Shift+C", command=self.copy_last_snip)
         edit_menu.add_separator()
@@ -601,8 +719,8 @@ class ViewerWindow(tk.Toplevel):
         view_menu.add_command(label="Full Screen", accelerator="F11", command=self.toggle_fullscreen)
 
         go_menu = self.menubar.add_menu("Go", underline=0)
-        go_menu.add_command(label="Next File", accelerator="Right", command=self.next_file)
-        go_menu.add_command(label="Previous File", accelerator="Left", command=self.previous_file)
+        go_menu.add_command(label="Next File", accelerator="Down", command=self.next_file)
+        go_menu.add_command(label="Previous File", accelerator="Up", command=self.previous_file)
         go_menu.add_command(label="First File", accelerator="Home", command=lambda: self.select_index(0))
         go_menu.add_command(label="Last File", accelerator="End", command=lambda: self.select_index(len(self.filtered) - 1))
         go_menu.add_separator()
@@ -626,6 +744,8 @@ class ViewerWindow(tk.Toplevel):
                                        command=self._depth_changed)
         tools_menu.add_cascade(label="Subfolder Depth", menu=depth_menu)
         tools_menu.add_checkbutton(label="Auto Reload on Change", variable=self.auto_reload)
+        tools_menu.add_checkbutton(label="Autoplay Videos", variable=self.video_autoplay,
+                                   command=self._video_autoplay_changed)
         tools_menu.add_separator()
         tools_menu.add_checkbutton(label="Slideshow", accelerator="F9", variable=self.slideshow_on,
                                    command=self._slideshow_changed)
@@ -637,7 +757,7 @@ class ViewerWindow(tk.Toplevel):
         tools_menu.add_command(label="Rescan Folder", accelerator="F5", command=self.reload_all)
         tools_menu.add_command(label="Clear Caches", command=self.clear_caches)
         tools_menu.add_separator()
-        tools_menu.add_command(label="Set as Default Image / PDF Viewer…",
+        tools_menu.add_command(label="Set as Default Media / PDF Viewer…",
                                command=self.register_file_types)
 
         help_menu = self.menubar.add_menu("Help", underline=0)
@@ -726,10 +846,11 @@ class ViewerWindow(tk.Toplevel):
         bind("<Control-bracketright>", lambda e: self.rotate(90))
         bind("<Control-Key-1>", lambda e: self._set_filter(D.FILTER_IMAGES))
         bind("<Control-Key-2>", lambda e: self._set_filter(D.FILTER_DOCS))
-        bind("<Control-Key-3>", lambda e: self._set_filter(D.FILTER_ALL))
+        bind("<Control-Key-3>", lambda e: self._set_filter(D.FILTER_VIDEOS))
+        bind("<Control-Key-4>", lambda e: self._set_filter(D.FILTER_ALL))
 
-        bind("<Left>", guard(self.previous_file))
-        bind("<Right>", guard(self.next_file))
+        bind("<Left>", guard(self._previous_action))
+        bind("<Right>", guard(self._next_action))
         bind("<Up>", guard(self.previous_file))
         bind("<Down>", guard(self.next_file))
         bind("<Home>", guard(lambda: self.select_index(0)))
@@ -743,6 +864,7 @@ class ViewerWindow(tk.Toplevel):
         bind("<F9>", lambda e: (self.slideshow_on.set(not self.slideshow_on.get()), self._slideshow_changed()))
         bind("<F11>", lambda e: self.toggle_fullscreen())
         bind("<Escape>", self._on_escape)
+        bind("<space>", guard(self.toggle_video))
         bind("<s>", guard(lambda: (self.snip_mode.set(not self.snip_mode.get()), self._snip_mode_changed())))
         bind("<i>", guard(lambda: (self.invert.set(not self.invert.get()), self.redraw_now())))
         bind("<Delete>", guard(self.delete_current))
@@ -803,7 +925,9 @@ class ViewerWindow(tk.Toplevel):
             self.set_folder(Path(chosen))
 
     def choose_file(self) -> None:
-        patterns = " ".join(f"*{s}" for s in sorted(D.RASTER_SUFFIXES | D.VECTOR_SUFFIXES))
+        patterns = " ".join(
+            f"*{s}" for s in sorted(D.RASTER_SUFFIXES | D.VECTOR_SUFFIXES | D.VIDEO_SUFFIXES)
+        )
         chosen = filedialog.askopenfilename(
             parent=self, initialdir=str(self.folder), title="Open a file",
             filetypes=[("Supported files", patterns), ("All files", "*.*")])
@@ -884,6 +1008,7 @@ class ViewerWindow(tk.Toplevel):
         self.folder = folder
         self.folder_var.set(str(folder))
         self.title(f"{APP_NAME} - {folder}")
+        self._stop_video_session()
         self.current = None
         self.document = None
         self.page = 0
@@ -979,8 +1104,10 @@ class ViewerWindow(tk.Toplevel):
             for entry in self.filtered:
                 parent = self._ensure_group(entry.subfolder, groups) if grouped else ""
                 label = entry.name if grouped else entry.relname
+                tags = (("doc",) if entry.kind == D.KIND_DOC else
+                        ("video",) if entry.kind == D.KIND_VIDEO else ())
                 self.tree.insert(parent, "end", iid=str(entry.path), text=f"  {label}",
-                                 tags=("doc",) if entry.kind == D.KIND_DOC else ())
+                                 tags=tags)
             self._suppress_select = False
             self._displayed = rows
             self._grouped = grouped
@@ -998,6 +1125,7 @@ class ViewerWindow(tk.Toplevel):
             self._queue_thumbnails(size)
 
         if not self.filtered:
+            self._stop_video_session()
             self.current = None
             self.document = None
             self.canvas.delete("all")
@@ -1041,8 +1169,16 @@ class ViewerWindow(tk.Toplevel):
             count = str(total)
         else:
             docs_count = sum(1 for e in self.filtered if e.kind == D.KIND_DOC)
-            images = total - docs_count
-            count = f"{images} img · {docs_count} doc" if docs_count else str(total)
+            videos = sum(1 for e in self.filtered if e.kind == D.KIND_VIDEO)
+            images = total - docs_count - videos
+            parts = []
+            if images:
+                parts.append(f"{images} img")
+            if docs_count:
+                parts.append(f"{docs_count} doc")
+            if videos:
+                parts.append(f"{videos} vid")
+            count = " · ".join(parts) if parts else str(total)
             if self.scan_depth.get() != 0:
                 folders = len({e.subfolder for e in self.filtered})
                 if folders > 1:
@@ -1165,6 +1301,8 @@ class ViewerWindow(tk.Toplevel):
             self._thumb_cache[key] = image
             return entry, image
 
+        video_jobs = 0
+        video_placeholder: Optional[Image.Image] = None
         for entry in self.filtered[:400]:
             iid = str(entry.path)
             key = entry.key + (size,)
@@ -1174,12 +1312,28 @@ class ViewerWindow(tk.Toplevel):
             if cached is not None:
                 apply((entry, cached))
                 continue
+            # Opening hundreds of movie containers merely for sidebar posters
+            # can monopolise the shared worker pool. Decode a generous first
+            # screenful and use a crisp media tile for the rest. Playback has
+            # its own thread and is never held behind thumbnail work.
+            if entry.kind == D.KIND_VIDEO and video_jobs >= 64:
+                if video_placeholder is None:
+                    video_placeholder = V.placeholder_thumbnail(size)
+                apply((entry, video_placeholder))
+                continue
+            if entry.kind == D.KIND_VIDEO:
+                video_jobs += 1
             self.app.worker.submit(lambda e=entry: make(e), apply, lambda _exc: None)
 
     # ------------------------------------------------------------- loading
     def load(self, entry: D.Entry, *, keep_view: bool = False, note: str = "Loaded") -> None:
-        """Load a document on a worker thread and display it."""
+        """Load a still document asynchronously or start a video stream."""
         self.current = entry
+        if entry.kind == D.KIND_VIDEO:
+            self._load_video(entry, keep_view=keep_view, note=note)
+            return
+
+        self._stop_video_session()
         token = time.perf_counter()
         self._load_token = token
         dpi = self.pdf_dpi.get()
@@ -1218,6 +1372,134 @@ class ViewerWindow(tk.Toplevel):
 
         self.app.worker.submit(job, done, failed)
 
+    def _load_video(self, entry: D.Entry, *, keep_view: bool, note: str) -> None:
+        """Start a streaming session without placing movie bytes in the cache."""
+        previous = self._video_session.snapshot() if self._video_session is not None else None
+        resume_at = previous.position if (keep_view and previous is not None) else 0.0
+        autoplay = (not previous.paused if keep_view and previous is not None
+                    else self.video_autoplay.get())
+        self._stop_video_session()
+        self.document = None
+        self.page = 0
+        self._minimap_key = None
+        self._video_last_state = ""
+        self.canvas.delete("all")
+        self._draw_message("Loading video…")
+        self.video_controls.grid()
+        self._adapt_video_controls(self._canvas_size()[0])
+        self.video_position.set(0.0)
+        self.video_time_var.set("0:00 / 0:00")
+        self.video_meta_var.set("LOADING")
+        session = V.VideoSession(
+            entry.path, self._canvas_size(), autoplay=autoplay,
+            loop=self.video_loop.get(),
+        )
+        self._video_session = session
+        if resume_at > 0:
+            session.seek(resume_at)
+        self._update_status(note)
+        self._video_job = self.after(15, self._poll_video)
+
+    def _stop_video_session(self) -> None:
+        """Cancel presentation, stop decoding, and release the current movie."""
+        if self._video_job:
+            try:
+                self.after_cancel(self._video_job)
+            except Exception:
+                pass
+            self._video_job = None
+        session = self._video_session
+        self._video_session = None
+        if session is not None:
+            session.close()
+        if hasattr(self, "video_controls"):
+            self.video_controls.grid_remove()
+        self._video_photo = None
+        try:
+            self.canvas.delete("video")
+        except Exception:
+            pass
+
+    def _poll_video(self) -> None:
+        """Present the newest decoded frame and refresh the transport state."""
+        self._video_job = None
+        session = self._video_session
+        if self._destroyed or session is None:
+            return
+
+        snapshot = session.snapshot()
+        state_changed = snapshot.state != self._video_last_state
+        frame = session.pop_frame()
+        if frame is not None:
+            _sequence, image, _position = frame
+            self._video_photo = ImageTk.PhotoImage(image, master=self)
+            self.canvas.delete("scene")
+            cw, ch = self._canvas_size()
+            self.canvas.create_image(
+                cw / 2, ch / 2, image=self._video_photo, anchor="center",
+                tags=("scene", "video"),
+            )
+
+        if snapshot.state == "error":
+            if state_changed:
+                self._draw_message(snapshot.error)
+                self.status_var.set(
+                    f"Could not play {self.current.relname}: {snapshot.error}"
+                )
+        else:
+            duration = max(snapshot.duration, 0.001)
+            self.video_scale.configure(to=duration)
+            if not self._video_scrubbing:
+                self.video_position.set(min(snapshot.position, duration))
+            shown_position = self.video_position.get() if self._video_scrubbing else snapshot.position
+            self.video_time_var.set(
+                f"{V.format_clock(shown_position)} / {V.format_clock(snapshot.duration)}"
+            )
+            codec = snapshot.codec or "VIDEO"
+            self.video_meta_var.set(codec)
+
+        playing = snapshot.state == "playing"
+        self.video_play_button.configure(
+            image=self.icons.get("pause" if playing else "play"),
+        )
+        if state_changed:
+            self._video_last_state = snapshot.state
+            self._update_readouts()
+            self._update_info()
+        delay = 15 if snapshot.state in ("loading", "playing") else 80
+        self._video_job = self.after(delay, self._poll_video)
+
+    def toggle_video(self) -> None:
+        session = self._video_session
+        if session is not None:
+            session.toggle()
+
+    def stop_video_playback(self) -> None:
+        session = self._video_session
+        if session is not None:
+            session.stop_playback()
+
+    def seek_video(self, seconds: float) -> None:
+        session = self._video_session
+        if session is not None:
+            session.seek_relative(seconds)
+
+    def _video_seek_press(self, _event=None) -> None:
+        self._video_scrubbing = True
+
+    def _video_seek_release(self, _event=None) -> None:
+        self._video_scrubbing = False
+        if self._video_session is not None:
+            self._video_session.seek(self.video_position.get())
+
+    def _video_loop_changed(self) -> None:
+        self.app.settings["video_loop"] = self.video_loop.get()
+        if self._video_session is not None:
+            self._video_session.set_loop(self.video_loop.get())
+
+    def _video_autoplay_changed(self) -> None:
+        self.app.settings["video_autoplay"] = self.video_autoplay.get()
+
     def _prefetch_neighbours(self) -> None:
         """Warm the cache with the next and previous file so navigation is instant."""
         index = self._index()
@@ -1226,6 +1508,8 @@ class ViewerWindow(tk.Toplevel):
             position = index + offset
             if 0 <= position < len(self.filtered):
                 entry = self.filtered[position]
+                if entry.kind == D.KIND_VIDEO:
+                    continue
                 if self.app.cache.peek(entry, pdf_dpi=dpi) is None:
                     self.app.worker.submit(
                         lambda e=entry: self.app.cache.get(e, pdf_dpi=dpi),
@@ -1427,6 +1711,9 @@ class ViewerWindow(tk.Toplevel):
         """Immediate repaint, then schedule the high-quality pass."""
         if self._destroyed:
             return
+        if self._video_session is not None:
+            self._video_session.set_viewport(self._canvas_size())
+            return
         if self.document is None:
             self._draw_empty()
             return
@@ -1562,6 +1849,10 @@ class ViewerWindow(tk.Toplevel):
 
         def apply():
             self._resize_job = None
+            if self._video_session is not None:
+                self._adapt_video_controls(self._canvas_size()[0])
+                self._video_session.set_viewport(self._canvas_size())
+                return
             if self.document is None:
                 self._draw_empty()
                 return
@@ -1627,6 +1918,9 @@ class ViewerWindow(tk.Toplevel):
 
     def _on_double_click(self, _event) -> None:
         """Toggle between fit-page and 100 %."""
+        if self._video_session is not None:
+            self.toggle_video()
+            return
         if abs(self.scale - 1.0) < 1e-6:
             self.fit_page()
         else:
@@ -1702,6 +1996,10 @@ class ViewerWindow(tk.Toplevel):
     # ------------------------------------------------------------- snipping
     def _snip_mode_changed(self) -> None:
         active = self.snip_mode.get()
+        if active and self._video_session is not None:
+            self.snip_mode.set(False)
+            self.toast("Video frames can be copied or saved, but region snipping is for still images")
+            return
         self.canvas.configure(cursor="crosshair" if active else "")
         if active:
             self.toast("Snip: drag a rectangle to copy it. Shift = square, Esc = cancel.")
@@ -1812,7 +2110,19 @@ class ViewerWindow(tk.Toplevel):
         return "break"
 
     def copy_image(self) -> None:
-        """Copy the whole current page at full resolution."""
+        """Copy the whole current page or the current full-resolution video frame."""
+        if self._video_session is not None:
+            image = self._video_session.current_frame()
+            if image is None:
+                self.toast("The first video frame is still loading")
+                return
+            try:
+                winclip.copy_image(image)
+            except Exception as exc:
+                messagebox.showerror("Clipboard error", str(exc), parent=self)
+                return
+            self.toast(f"Copied video frame ({image.width} x {image.height} px)")
+            return
         if self.document is None:
             return
         quality = 1.0
@@ -1828,6 +2138,12 @@ class ViewerWindow(tk.Toplevel):
 
     def copy_view(self) -> None:
         """Copy exactly what is visible on screen, at screen resolution."""
+        if self._video_session is not None:
+            # The streaming renderer retains only one full-resolution source
+            # frame. Copying it is preferable to reading pixels back from Tk,
+            # which would be slower and lower quality.
+            self.copy_image()
+            return
         request = self._tile_request()
         if request is None or self.document is None:
             return
@@ -1881,8 +2197,25 @@ class ViewerWindow(tk.Toplevel):
         self.toast(f"Copied {len(text)} characters of page text")
 
     def save_page_as(self) -> None:
-        """Write the current page to a new file."""
-        if self.document is None or self.current is None:
+        """Write the current still page or video frame to a new image file."""
+        if self.current is None:
+            return
+        if self._video_session is not None:
+            image = self._video_session.current_frame()
+            if image is None:
+                self.toast("The first video frame is still loading")
+                return
+            seconds = int(self._video_session.snapshot().position)
+            target = filedialog.asksaveasfilename(
+                parent=self, title="Save video frame as", initialdir=str(self.folder),
+                initialfile=f"{self.current.path.stem}_frame_{seconds:06d}.png",
+                defaultextension=".png",
+                filetypes=[("PNG image", "*.png"), ("JPEG image", "*.jpg")],
+            )
+            if target:
+                self._write_image(image, Path(target))
+            return
+        if self.document is None:
             return
         default = f"{self.current.path.stem}"
         if self.document.page_count > 1:
@@ -1977,6 +2310,7 @@ class ViewerWindow(tk.Toplevel):
                                    f"Move this file to the Recycle Bin?\n\n{path}",
                                    parent=self, default="no"):
             return
+        self._stop_video_session()
         try:
             self._recycle(path)
         except Exception as exc:
@@ -2033,6 +2367,19 @@ class ViewerWindow(tk.Toplevel):
     def previous_file(self) -> None:
         if self.filtered:
             self.select_index((self._index() - 1) % len(self.filtered))
+
+    def _previous_action(self) -> None:
+        """Seek in a video, otherwise preserve the existing file navigation."""
+        if self._video_session is not None:
+            self.seek_video(-5)
+        else:
+            self.previous_file()
+
+    def _next_action(self) -> None:
+        if self._video_session is not None:
+            self.seek_video(5)
+        else:
+            self.next_file()
 
     def change_page(self, delta: int) -> None:
         """Move within a multi-page document; roll over to the next file."""
@@ -2119,7 +2466,7 @@ class ViewerWindow(tk.Toplevel):
             return
         if not messagebox.askokcancel(
                 "Set as default viewer",
-                "Figure Viewer will be registered with Windows for images and PDFs.\n\n"
+                "Figure Viewer will be registered with Windows for images, videos, and PDFs.\n\n"
                 "Nothing outside your own user account is modified, and\n"
                 "unregister_file_types.ps1 undoes it.\n\n"
                 "Windows then opens its Default apps page: pick Figure Viewer\n"
@@ -2279,6 +2626,16 @@ class ViewerWindow(tk.Toplevel):
 
     # ------------------------------------------------------------ read-outs
     def _update_readouts(self) -> None:
+        if self._video_session is not None:
+            snapshot = self._video_session.snapshot()
+            if snapshot.width and snapshot.height:
+                self.page_var.set(
+                    f"{snapshot.width} x {snapshot.height} px   {snapshot.fps:.2f} fps"
+                )
+            else:
+                self.page_var.set("Loading video…")
+            self.zoom_var.set(snapshot.state.upper())
+            return
         self.zoom_var.set(f"{self.scale * 100:.0f}%")
         if self.document is None:
             self.page_var.set("")
@@ -2317,6 +2674,20 @@ class ViewerWindow(tk.Toplevel):
             ]
             if self.document is not None:
                 rows.extend(self.document.info.items())
+            elif self._video_session is not None:
+                snapshot = self._video_session.snapshot()
+                rows += [
+                    ("Media", "Video"),
+                    ("State", snapshot.state.capitalize()),
+                    ("Dimensions", f"{snapshot.width} x {snapshot.height} px"),
+                    ("Frame rate", f"{snapshot.fps:.3g} fps"),
+                    ("Duration", V.format_clock(snapshot.duration)),
+                    ("Codec", snapshot.codec or "Unknown"),
+                    ("Frames", f"{snapshot.frame_count:,}"),
+                    ("Audio", "Not available in the OpenCV backend"),
+                ]
+                if snapshot.error:
+                    rows.append(("Playback error", snapshot.error))
             for key, value in rows:
                 text.insert(tk.END, f"{key}\n", "key")
                 text.insert(tk.END, f"{value}\n\n", "value")
@@ -2338,6 +2709,19 @@ class ViewerWindow(tk.Toplevel):
     def _canvas_context_menu(self, event) -> None:
         menu = tk.Menu(self)
         style_menu(menu, self.palette)
+        if self._video_session is not None:
+            snapshot = self._video_session.snapshot()
+            menu.add_command(label="Play" if snapshot.paused else "Pause",
+                             command=self.toggle_video)
+            menu.add_command(label="Back 5 Seconds", command=lambda: self.seek_video(-5))
+            menu.add_command(label="Forward 5 Seconds", command=lambda: self.seek_video(5))
+            menu.add_separator()
+            menu.add_command(label="Copy Current Frame", command=self.copy_image)
+            menu.add_command(label="Save Current Frame As…", command=self.save_page_as)
+            menu.add_separator()
+            menu.add_command(label="Open in Default App", command=self.open_default_app)
+            menu.tk_popup(event.x_root, event.y_root)
+            return
         menu.add_command(label="Copy Image", command=self.copy_image)
         menu.add_command(label="Copy Visible View", command=self.copy_view)
         menu.add_command(label="Snip Region", command=lambda: (self.snip_mode.set(True), self._snip_mode_changed()))
@@ -2363,7 +2747,7 @@ class ViewerWindow(tk.Toplevel):
                                                              self.current.path if self.current else None))
         menu.add_command(label="Reveal in Explorer", command=self.reveal_in_explorer)
         menu.add_separator()
-        menu.add_command(label="Copy Image", command=self.copy_image)
+        menu.add_command(label="Copy Image / Video Frame", command=self.copy_image)
         menu.add_command(label="Copy Path", command=self.copy_path)
         menu.add_command(label="Copy File", command=self.copy_file_object)
         menu.add_separator()
@@ -2374,7 +2758,8 @@ class ViewerWindow(tk.Toplevel):
     def show_shortcuts(self) -> None:
         rows = [
             ("Navigation", ""),
-            ("Left / Right / Up / Down", "Previous / next file"),
+            ("Up / Down", "Previous / next file"),
+            ("Left / Right", "Previous / next file; seek 5 s in a video"),
             ("Home / End", "First / last file"),
             ("PageUp / PageDown", "Previous / next page (multi-page files)"),
             ("Ctrl+G", "Go to page"),
@@ -2401,12 +2786,17 @@ class ViewerWindow(tk.Toplevel):
             ("Ctrl+Shift+V", "Copy exactly what is on screen"),
             ("Ctrl+Shift+C", "Copy the last snip again"),
             ("Ctrl+Shift+P", "Copy the file path"),
-            ("Ctrl+S / Ctrl+Shift+S", "Save page / snip as a file"),
+            ("Ctrl+S / Ctrl+Shift+S", "Save page or video frame / save snip"),
+            ("", ""),
+            ("Video", ""),
+            ("Space / double click", "Play or pause"),
+            ("Left / Right", "Seek back / forward 5 seconds"),
+            ("Transport bar", "Seek, stop, and toggle looping"),
             ("", ""),
             ("Files", ""),
             ("Ctrl+N / Ctrl+Shift+N", "New window / duplicate this window"),
             ("Ctrl+O / Ctrl+Shift+O", "Open folder / open file"),
-            ("Ctrl+1 / 2 / 3", "Show images / PDFs / everything"),
+            ("Ctrl+1 / 2 / 3 / 4", "Show images / PDFs / videos / everything"),
             ("Ctrl+Shift+R", "Include subfolders / this folder only"),
             ("Ctrl+F", "Filter the file list"),
             ("F5", "Rescan and reload"),
@@ -2440,10 +2830,12 @@ class ViewerWindow(tk.Toplevel):
         messagebox.showinfo(
             f"About {APP_NAME}",
             f"{APP_NAME} {APP_VERSION}\n\n"
-            f"A fast folder-based viewer for figures and PDFs.\n\n"
+            f"A fast folder-based viewer for images, videos, and PDFs.\n\n"
             f"Python {sys.version.split()[0]}\n"
             f"Pillow {Image.__version__}\n"
-            f"PDF support: {'available' if D.HAVE_FITZ else 'install pymupdf'}\n",
+            f"PDF support: {'available' if D.HAVE_FITZ else 'install pymupdf'}\n"
+            f"Video support: {'OpenCV / FFmpeg' if V.backend_available() else 'install opencv-python'}\n"
+            f"Video audio: not available in the OpenCV backend\n",
             parent=self)
 
     # ---------------------------------------------------------------- close
@@ -2452,8 +2844,9 @@ class ViewerWindow(tk.Toplevel):
         if self._destroyed:
             return
         self._destroyed = True
+        self._stop_video_session()
         for job in (self._watch_job, self._quality_job, self._toast_job,
-                    self._slideshow_job, self._resize_job):
+                    self._slideshow_job, self._resize_job, self._video_job):
             if job:
                 try:
                     self.after_cancel(job)

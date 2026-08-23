@@ -63,11 +63,11 @@ Write-Host "  app dir  $AppDir"
 Write-Host "  python   $Pythonw"
 
 New-ViewerShortcut -Path (Join-Path $StartMenu "Figure Viewer.lnk") -Arguments "" `
-    -Description "Figure Viewer - browse figures and PDFs in any folder"
+    -Description "Figure Viewer - browse images, videos and PDFs in any folder"
 
 if (-not $NoDesktop) {
     New-ViewerShortcut -Path (Join-Path $Desktop "Figure Viewer.lnk") -Arguments "" `
-        -Description "Figure Viewer - browse figures and PDFs in any folder"
+        -Description "Figure Viewer - browse images, videos and PDFs in any folder"
 }
 
 if ($Folder -ne "") {

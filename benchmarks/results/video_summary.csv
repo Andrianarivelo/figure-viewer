@@ -1,0 +1,2 @@
+metric,first_frame_ms,wall_seconds,media_seconds,realtime_ratio,presented_fps,mailbox_drops,viewport_width,viewport_height
+1080p video playback,65.26360000134446,1.8065896999905817,1.8333333333333333,1.0148033797286073,29.89057227564262,0,1000,650

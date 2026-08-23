@@ -42,6 +42,7 @@ class Palette:
     canvas_alt: str    # second checkerboard tone
     shadow: str        # drop shadow tone behind the page
     ok: str            # success feedback
+    media: str         # video identity / transport feedback
     warn: str          # warning feedback
     danger: str        # error feedback
 
@@ -62,6 +63,7 @@ DARK = Palette(
     canvas_alt="#12151b",
     shadow="#05070a",
     ok="#4ade80",
+    media="#22d3ee",
     warn="#fbbf24",
     danger="#f87171",
 )
@@ -82,6 +84,7 @@ LIGHT = Palette(
     canvas_alt="#e9edf3",
     shadow="#b7bfcc",
     ok="#15803d",
+    media="#078ca8",
     warn="#b45309",
     danger="#b91c1c",
 )
@@ -207,7 +210,9 @@ def apply_theme(root: tk.Misc, palette: Palette) -> None:
     style.configure("TFrame", background=p.bg)
     style.configure("Panel.TFrame", background=p.panel)
     style.configure("Card.TFrame", background=p.panel_alt)
+    style.configure("ToolbarGroup.TFrame", background=p.panel_alt)
     style.configure("Toolbar.TFrame", background=p.panel)
+    style.configure("Transport.TFrame", background=p.panel_alt)
     style.configure("Status.TFrame", background=p.panel)
     style.configure("Rule.TFrame", background=p.border)
     # The drag handle between the file list and the canvas. Invisible at rest -
@@ -224,6 +229,10 @@ def apply_theme(root: tk.Misc, palette: Palette) -> None:
     style.configure("Status.TLabel", background=p.panel, foreground=p.muted, font="FVsmall")
     style.configure("Mono.TLabel", background=p.panel, foreground=p.muted, font="FVmono")
     style.configure("Accent.TLabel", background=p.panel, foreground=p.accent, font="FVuiBold")
+    style.configure("Transport.TLabel", background=p.panel_alt, foreground=p.muted,
+                    font="FVmono")
+    style.configure("Media.TLabel", background=p.panel_alt, foreground=p.media,
+                    font="FVsmall")
 
     # --- buttons ----------------------------------------------------------
     # width=0 is not cosmetic pedantry. ttk gives Button and Menubutton a
@@ -245,6 +254,23 @@ def apply_theme(root: tk.Misc, palette: Palette) -> None:
               background=[("pressed", p.accent), ("active", p.hover), ("disabled", p.panel)],
               foreground=[("pressed", p.accent_text), ("disabled", p.muted)])
 
+    # Icon-first controls sit in a softly raised group. A consistent square
+    # hit target makes the new pictograms feel deliberate rather than like
+    # isolated font characters scattered along the toolbar.
+    style.configure("Icon.TButton", background=p.panel_alt, foreground=p.text,
+                    padding=(7, 6), relief="flat", width=0)
+    style.map("Icon.TButton",
+              background=[("pressed", p.select), ("active", p.hover),
+                          ("disabled", p.panel_alt)],
+              foreground=[("disabled", p.muted)])
+
+    style.configure("Transport.TButton", background=p.panel_alt, foreground=p.text,
+                    padding=(7, 5), relief="flat", width=0)
+    style.map("Transport.TButton",
+              background=[("pressed", p.select), ("active", p.hover),
+                          ("disabled", p.panel_alt)],
+              foreground=[("disabled", p.muted)])
+
     style.configure("Accent.TButton", background=p.accent, foreground=p.accent_text,
                     padding=(10, 5), relief="flat", width=0)
     style.map("Accent.TButton", background=[("active", p.accent), ("pressed", p.accent)])
@@ -252,7 +278,8 @@ def apply_theme(root: tk.Misc, palette: Palette) -> None:
     # Segmented control: radio buttons that look like a joined button group.
     # The indicator element is dropped from the layout entirely - setting
     # `indicatorsize=0` still leaves a gap in the clam theme.
-    for name in ("Segment.TRadiobutton", "Toggle.TCheckbutton", "Modal.TCheckbutton"):
+    for name in ("Segment.TRadiobutton", "Toggle.TCheckbutton", "Modal.TCheckbutton",
+                 "Transport.TCheckbutton"):
         element = "Radiobutton" if "Radio" in name else "Checkbutton"
         style.layout(name, [
             (f"{element}.padding", {"sticky": "nswe", "children": [
@@ -284,6 +311,12 @@ def apply_theme(root: tk.Misc, palette: Palette) -> None:
     style.map("Modal.TCheckbutton",
               background=[("selected", p.accent), ("active", p.hover)],
               foreground=[("selected", p.accent_text), ("active", p.text)])
+
+    style.configure("Transport.TCheckbutton", background=p.panel_alt, foreground=p.muted,
+                    padding=(8, 4), relief="flat", anchor="center")
+    style.map("Transport.TCheckbutton",
+              background=[("selected", p.select), ("active", p.hover)],
+              foreground=[("selected", p.media), ("active", p.text)])
 
     style.configure("TCheckbutton", background=p.panel, foreground=p.text)
     style.map("TCheckbutton",
@@ -367,6 +400,13 @@ def apply_theme(root: tk.Misc, palette: Palette) -> None:
     style.configure("Sash", sashthickness=6, gripcount=0, background=p.border)
     style.configure("TProgressbar", background=p.accent, troughcolor=p.panel_alt,
                     bordercolor=p.panel_alt, lightcolor=p.accent, darkcolor=p.accent)
+    style.configure("Media.Horizontal.TScale", background=p.panel_alt,
+                    troughcolor=p.border, bordercolor=p.panel_alt,
+                    lightcolor=p.media, darkcolor=p.media, sliderrelief="flat",
+                    groovewidth=4, sliderlength=14)
+    style.map("Media.Horizontal.TScale",
+              background=[("active", p.panel_alt)],
+              troughcolor=[("active", p.border)])
     # width=0: see the note on TButton. Without it every menu title reserved
     # eleven characters, so "Go" sat 150 px from "Tools" and the bar read as
     # six scattered words rather than a menu.
@@ -492,9 +532,11 @@ def bind_tooltip(widget: tk.Misc, text: str, palette: Palette) -> Tooltip:
 
 def toolbar_button(master: tk.Misc, text: str, command: Callable[[], None],
                    palette: Palette, tooltip: str = "", width: Optional[int] = None,
-                   style: str = "Tool.TButton") -> ttk.Button:
+                   style: str = "Tool.TButton", image=None,
+                   compound: str = "left") -> ttk.Button:
     """Create a flat toolbar button with an optional tooltip."""
-    button = ttk.Button(master, text=text, command=command, style=style, takefocus=False)
+    button = ttk.Button(master, text=text, command=command, style=style,
+                        takefocus=False, image=image, compound=compound)
     if width:
         button.configure(width=width)
     if tooltip:

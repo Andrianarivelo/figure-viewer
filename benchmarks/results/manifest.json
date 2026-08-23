@@ -1,0 +1,18 @@
+{
+  "python": "3.13.13",
+  "platform": "win32",
+  "parameters": {
+    "pairs": 16,
+    "scan_files": 2400,
+    "video_size": [
+      1920,
+      1080
+    ],
+    "video_fps": 30.0,
+    "video_sample_seconds": 1.8,
+    "video_viewport": [
+      1000,
+      650
+    ]
+  }
+}

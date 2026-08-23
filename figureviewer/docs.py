@@ -10,7 +10,9 @@ Design goals
 3. **Never block the UI thread.** Scanning, decoding and thumbnailing all run
    on a small worker pool; results are delivered through a queue.
 
-Two document kinds are implemented behind one interface:
+Two still-document kinds are implemented behind one interface. Video playback
+uses a separate streaming session in :mod:`figureviewer.video`, because loading
+an entire movie into the document cache would be both slow and wasteful:
 
 ``RasterDocument``  PNG / JPEG / TIFF / BMP / GIF / WebP, including multi-page
                     TIFFs and animated GIFs (each frame is a page).
@@ -30,6 +32,8 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from PIL import Image, ImageOps
+
+from . import VIDEO_SUFFIXES
 
 # Pillow's guard against decompression-bomb attacks trips on legitimate
 # high-resolution scientific figures; raise it rather than disable it.
@@ -55,18 +59,22 @@ RASTER_SUFFIXES = {
 }
 #: Vector / paged formats, only usable when PyMuPDF is importable.
 VECTOR_SUFFIXES = {".pdf", ".svg", ".eps", ".xps", ".oxps", ".cbz", ".epub"}
+# Imported from the already-loaded package root. The playback backend is still
+# loaded only when a video window or video thumbnail is actually requested.
 
 KIND_IMAGE = "image"
 KIND_DOC = "doc"
+KIND_VIDEO = "video"
 
 #: Filter modes offered by the toolbar's segmented switch.
 FILTER_IMAGES = "images"
 FILTER_DOCS = "docs"
+FILTER_VIDEOS = "videos"
 FILTER_ALL = "all"
 
 
 def suffix_kind(suffix: str) -> Optional[str]:
-    """Return ``KIND_IMAGE`` / ``KIND_DOC`` for a file suffix, else ``None``."""
+    """Return the media kind for a supported suffix, else ``None``."""
     low = suffix.lower()
     if low in RASTER_SUFFIXES:
         return KIND_IMAGE
@@ -74,6 +82,8 @@ def suffix_kind(suffix: str) -> Optional[str]:
         return KIND_DOC
     if low == ".pdf":
         return KIND_DOC          # listed even without a renderer, so the user
+    if low in VIDEO_SUFFIXES:
+        return KIND_VIDEO
     return None                  # gets a helpful message instead of silence
 
 
@@ -83,7 +93,9 @@ def kinds_for_filter(mode: str) -> set[str]:
         return {KIND_IMAGE}
     if mode == FILTER_DOCS:
         return {KIND_DOC}
-    return {KIND_IMAGE, KIND_DOC}
+    if mode == FILTER_VIDEOS:
+        return {KIND_VIDEO}
+    return {KIND_IMAGE, KIND_DOC, KIND_VIDEO}
 
 
 @dataclass(frozen=True)
@@ -613,6 +625,8 @@ class VectorDocument(Document):
 
 def load_document(entry: Entry, *, pdf_dpi: float = 150.0) -> Document:
     """Read a file into memory and wrap it in the right document class."""
+    if entry.kind == KIND_VIDEO:
+        raise TypeError("Videos are streamed by VideoSession, not loaded as documents")
     data = entry.path.read_bytes()
     if entry.kind == KIND_DOC:
         return VectorDocument(entry, data, base_dpi=pdf_dpi)
@@ -689,6 +703,11 @@ def thumbnail_for(entry: Entry, size: int) -> Image.Image:
     scale directly - typically 5-10x faster than a full decode. PDFs are
     rendered at a low DPI for the same reason.
     """
+    if entry.kind == KIND_VIDEO:
+        from . import video as V
+
+        return V.thumbnail(entry.path, size)
+
     if entry.kind == KIND_DOC:
         document = load_document(entry, pdf_dpi=72.0)
         try:

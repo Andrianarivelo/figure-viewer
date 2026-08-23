@@ -1,4 +1,4 @@
-# Register Figure Viewer with Windows as an image and PDF viewer.
+# Register Figure Viewer with Windows as an image, video, and PDF viewer.
 #
 # What this does, and what it deliberately does not do
 # ----------------------------------------------------
@@ -58,10 +58,12 @@ $CapPath     = "Software\FigureViewer\Capabilities"  # relative: that is the for
 $ProgIdPrefix = "FigureViewer"
 
 # ------------------------------------------------------------ extensions
-# Raster formats Pillow reads, plus PDF. Vector formats are opt-in because a
+# Raster and common video formats, plus PDF. Vector formats are opt-in because a
 # browser or Illustrator is usually the better default for .svg and .eps.
 $DefaultExtensions = @(".png", ".jpg", ".jpeg", ".jpe", ".tif", ".tiff",
-                       ".bmp", ".gif", ".webp", ".jp2", ".ppm", ".pgm", ".pdf")
+                       ".bmp", ".gif", ".webp", ".jp2", ".ppm", ".pgm", ".pdf",
+                       ".mp4", ".m4v", ".mov", ".avi", ".mkv", ".webm", ".wmv",
+                       ".mpg", ".mpeg", ".mpe", ".ogv", ".mts", ".m2ts", ".ts")
 $VectorExtensions  = @(".svg", ".eps", ".xps", ".oxps", ".cbz", ".epub")
 
 if ($Extensions -and $Extensions.Count -gt 0) {
@@ -87,7 +89,14 @@ $TypeNames = @{
     ".pdf"  = "PDF Document";        ".svg"  = "SVG Document"
     ".eps"  = "EPS Document";        ".xps"  = "XPS Document"
     ".oxps" = "OpenXPS Document";    ".cbz"  = "Comic Book Archive"
-    ".epub" = "EPUB Document"
+    ".epub" = "EPUB Document";      ".mp4"  = "MPEG-4 Video"
+    ".m4v"  = "MPEG-4 Video";        ".mov"  = "QuickTime Video"
+    ".avi"  = "AVI Video";           ".mkv"  = "Matroska Video"
+    ".webm" = "WebM Video";          ".wmv"  = "Windows Media Video"
+    ".mpg"  = "MPEG Video";          ".mpeg" = "MPEG Video"
+    ".mpe"  = "MPEG Video"
+    ".ogv"  = "Ogg Video";           ".mts"  = "AVCHD Video"
+    ".m2ts" = "MPEG-2 Transport";    ".ts"   = "MPEG Transport Stream"
 }
 
 # ------------------------------------------------------------ interpreter
@@ -114,6 +123,15 @@ if ($Targets -contains ".pdf") {
     }
     if ($LASTEXITCODE -ne 0) {
         Write-Warning "PyMuPDF is not installed for $probe, so PDFs will open with an install hint instead of a page. Fix with:  $probe -m pip install pymupdf"
+    }
+}
+
+$VideoExtensions = @(".mp4", ".m4v", ".mov", ".avi", ".mkv", ".webm", ".wmv",
+                     ".mpg", ".mpeg", ".mpe", ".ogv", ".mts", ".m2ts", ".ts")
+if ($Targets | Where-Object { $VideoExtensions -contains $_ }) {
+    & $Python -c "import cv2" 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "OpenCV is not installed for $Python, so videos will show an install hint. Fix with:  $Python -m pip install opencv-python"
     }
 }
 
@@ -165,7 +183,7 @@ foreach ($ext in $Targets) {
 
 Set-RegValue -Path "HKCU:\$CapPath" -Name "ApplicationName" -Value "Figure Viewer"
 Set-RegValue -Path "HKCU:\$CapPath" -Name "ApplicationDescription" `
-             -Value "Fast folder-based viewer for figures and PDFs, with live reload, snipping and multi-level subfolder browsing."
+             -Value "Fast folder-based viewer for images, videos and PDFs, with live reload, snipping and multi-level subfolder browsing."
 if (Test-Path $Icon) {
     Set-RegValue -Path "HKCU:\$CapPath" -Name "ApplicationIcon" -Value "$Icon,0"
 }
