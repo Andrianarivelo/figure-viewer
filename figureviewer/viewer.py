@@ -55,6 +55,8 @@ QUALITY_DELAY_MS = 110      # idle time before the high-quality repaint
 WATCH_MS = 1200             # folder polling interval
 TOAST_MS = 2400
 MINIMAP_MAX = 190
+VIDEO_FRAME_STEP_MIN = 1
+VIDEO_FRAME_STEP_MAX = 10_000
 
 #: Below this width the sidebar header has no room for the long count, and the
 #: text would run under the FILES label and off the edge.
@@ -251,6 +253,10 @@ class ViewerWindow(tk.Toplevel):
         self.snip_mode = tk.BooleanVar(value=False)
         self.video_loop = tk.BooleanVar(value=bool(settings.get("video_loop", False)))
         self.video_autoplay = tk.BooleanVar(value=bool(settings.get("video_autoplay", True)))
+        self.video_frame_step = tk.IntVar(value=max(
+            VIDEO_FRAME_STEP_MIN,
+            min(VIDEO_FRAME_STEP_MAX, int(settings.get("video_frame_step", 10))),
+        ))
 
         self.title(f"{APP_NAME} - {folder}")
         self._apply_icon()
@@ -437,17 +443,17 @@ class ViewerWindow(tk.Toplevel):
         frame.grid(row=1, column=0, sticky="ew")
         frame.columnconfigure(5, weight=1)
 
-        toolbar_button(frame, "", lambda: self.seek_video(-5), p,
-                       "Back 5 seconds  (Left)", style="Transport.TButton",
-                       image=self.icons.get("back5")).grid(row=0, column=0)
+        toolbar_button(frame, "", lambda: self.step_video_frames(-1), p,
+                       "Previous frame  (Left)", style="Transport.TButton",
+                       image=self.icons.get("previous")).grid(row=0, column=0)
         self.video_play_button = toolbar_button(
             frame, "", self.toggle_video, p, "Play or pause  (Space)",
             style="Transport.TButton", image=self.icons.get("play")
         )
         self.video_play_button.grid(row=0, column=1, padx=2)
-        toolbar_button(frame, "", lambda: self.seek_video(5), p,
-                       "Forward 5 seconds  (Right)", style="Transport.TButton",
-                       image=self.icons.get("forward5")).grid(row=0, column=2)
+        toolbar_button(frame, "", lambda: self.step_video_frames(1), p,
+                       "Next frame  (Right)", style="Transport.TButton",
+                       image=self.icons.get("next")).grid(row=0, column=2)
         toolbar_button(frame, "", self.stop_video_playback, p,
                        "Stop and return to the first frame", style="Transport.TButton",
                        image=self.icons.get("stop")).grid(row=0, column=3, padx=(2, 8))
@@ -746,6 +752,8 @@ class ViewerWindow(tk.Toplevel):
         tools_menu.add_checkbutton(label="Auto Reload on Change", variable=self.auto_reload)
         tools_menu.add_checkbutton(label="Autoplay Videos", variable=self.video_autoplay,
                                    command=self._video_autoplay_changed)
+        tools_menu.add_command(label="Video Frame Jump…",
+                               command=self.set_video_frame_step)
         tools_menu.add_separator()
         tools_menu.add_checkbutton(label="Slideshow", accelerator="F9", variable=self.slideshow_on,
                                    command=self._slideshow_changed)
@@ -851,8 +859,8 @@ class ViewerWindow(tk.Toplevel):
 
         bind("<Left>", guard(self._previous_action))
         bind("<Right>", guard(self._next_action))
-        bind("<Up>", guard(self.previous_file))
-        bind("<Down>", guard(self.next_file))
+        bind("<Up>", guard(self._video_jump_back_or_previous_file))
+        bind("<Down>", guard(self._video_jump_forward_or_next_file))
         bind("<Home>", guard(lambda: self.select_index(0)))
         bind("<End>", guard(lambda: self.select_index(len(self.filtered) - 1)))
         bind("<Prior>", guard(lambda: self.change_page(-1)))
@@ -1456,7 +1464,13 @@ class ViewerWindow(tk.Toplevel):
                 f"{V.format_clock(shown_position)} / {V.format_clock(snapshot.duration)}"
             )
             codec = snapshot.codec or "VIDEO"
-            self.video_meta_var.set(codec)
+            if snapshot.frame_count:
+                shown_frame = min(snapshot.frame_index + 1, snapshot.frame_count)
+                self.video_meta_var.set(
+                    f"{codec}  {shown_frame:,}/{snapshot.frame_count:,}"
+                )
+            else:
+                self.video_meta_var.set(codec)
 
         playing = snapshot.state == "playing"
         self.video_play_button.configure(
@@ -1483,6 +1497,26 @@ class ViewerWindow(tk.Toplevel):
         session = self._video_session
         if session is not None:
             session.seek_relative(seconds)
+
+    def step_video_frames(self, frames: int) -> None:
+        """Pause and move by an exact number of decoded video frames."""
+        session = self._video_session
+        if session is not None:
+            session.step_frames(frames)
+
+    def _video_jump_back_or_previous_file(self) -> None:
+        """Use Up as the configurable reverse jump only while viewing video."""
+        if self._video_session is not None:
+            self.step_video_frames(-self.video_frame_step.get())
+        else:
+            self.previous_file()
+
+    def _video_jump_forward_or_next_file(self) -> None:
+        """Use Down as the configurable forward jump only while viewing video."""
+        if self._video_session is not None:
+            self.step_video_frames(self.video_frame_step.get())
+        else:
+            self.next_file()
 
     def _video_seek_press(self, _event=None) -> None:
         self._video_scrubbing = True
@@ -2369,15 +2403,15 @@ class ViewerWindow(tk.Toplevel):
             self.select_index((self._index() - 1) % len(self.filtered))
 
     def _previous_action(self) -> None:
-        """Seek in a video, otherwise preserve the existing file navigation."""
+        """Step one video frame back, otherwise navigate to the previous file."""
         if self._video_session is not None:
-            self.seek_video(-5)
+            self.step_video_frames(-1)
         else:
             self.previous_file()
 
     def _next_action(self) -> None:
         if self._video_session is not None:
-            self.seek_video(5)
+            self.step_video_frames(1)
         else:
             self.next_file()
 
@@ -2553,6 +2587,24 @@ class ViewerWindow(tk.Toplevel):
             self.slideshow_secs.set(value)
             self.app.settings["slideshow_secs"] = value
 
+    def set_video_frame_step(self) -> None:
+        """Configure the frame count used by Up/Down during video playback."""
+        from tkinter import simpledialog
+
+        value = simpledialog.askinteger(
+            "Video frame jump",
+            "Frames jumped by Up / Down during video playback:\n\n"
+            "Left / Right always move exactly one frame.",
+            parent=self,
+            minvalue=VIDEO_FRAME_STEP_MIN,
+            maxvalue=VIDEO_FRAME_STEP_MAX,
+            initialvalue=self.video_frame_step.get(),
+        )
+        if value is not None:
+            self.video_frame_step.set(value)
+            self.app.settings["video_frame_step"] = value
+            self.toast(f"Video frame jump set to {value} frames")
+
     def _slideshow_changed(self) -> None:
         if self._slideshow_job:
             try:
@@ -2713,8 +2765,13 @@ class ViewerWindow(tk.Toplevel):
             snapshot = self._video_session.snapshot()
             menu.add_command(label="Play" if snapshot.paused else "Pause",
                              command=self.toggle_video)
-            menu.add_command(label="Back 5 Seconds", command=lambda: self.seek_video(-5))
-            menu.add_command(label="Forward 5 Seconds", command=lambda: self.seek_video(5))
+            menu.add_command(label="Previous Frame", command=lambda: self.step_video_frames(-1))
+            menu.add_command(label="Next Frame", command=lambda: self.step_video_frames(1))
+            jump = self.video_frame_step.get()
+            menu.add_command(label=f"Back {jump} Frames",
+                             command=lambda: self.step_video_frames(-jump))
+            menu.add_command(label=f"Forward {jump} Frames",
+                             command=lambda: self.step_video_frames(jump))
             menu.add_separator()
             menu.add_command(label="Copy Current Frame", command=self.copy_image)
             menu.add_command(label="Save Current Frame As…", command=self.save_page_as)
@@ -2758,8 +2815,8 @@ class ViewerWindow(tk.Toplevel):
     def show_shortcuts(self) -> None:
         rows = [
             ("Navigation", ""),
-            ("Up / Down", "Previous / next file"),
-            ("Left / Right", "Previous / next file; seek 5 s in a video"),
+            ("Up / Down", "Previous / next file; configurable frame jump in video"),
+            ("Left / Right", "Previous / next file; one frame in video"),
             ("Home / End", "First / last file"),
             ("PageUp / PageDown", "Previous / next page (multi-page files)"),
             ("Ctrl+G", "Go to page"),
@@ -2790,7 +2847,8 @@ class ViewerWindow(tk.Toplevel):
             ("", ""),
             ("Video", ""),
             ("Space / double click", "Play or pause"),
-            ("Left / Right", "Seek back / forward 5 seconds"),
+            ("Left / Right", "Previous / next frame"),
+            ("Up / Down", f"Jump back / forward {self.video_frame_step.get()} frames"),
             ("Transport bar", "Seek, stop, and toggle looping"),
             ("", ""),
             ("Files", ""),

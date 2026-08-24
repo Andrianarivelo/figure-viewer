@@ -74,6 +74,28 @@ class VideoSessionTests(unittest.TestCase):
             seeked = self._wait_for(session, lambda state: 1.7 <= state.position <= 2.4)
             self.assertTrue(seeked.paused)
 
+            # Frame commands are index-based, pause playback, and preserve
+            # their exact delta in both directions.
+            one_forward = min(seeked.frame_count - 1, seeked.frame_index + 1)
+            session.step_frames(1)
+            stepped = self._wait_for(
+                session, lambda state: state.frame_index == one_forward
+            )
+            self.assertTrue(stepped.paused)
+
+            ten_forward = min(stepped.frame_count - 1, stepped.frame_index + 10)
+            session.step_frames(10)
+            jumped = self._wait_for(
+                session, lambda state: state.frame_index == ten_forward
+            )
+            self.assertTrue(jumped.paused)
+
+            session.step_frames(-10)
+            returned = self._wait_for(
+                session, lambda state: state.frame_index == stepped.frame_index
+            )
+            self.assertTrue(returned.paused)
+
             # Clear the pre-resize mailbox, then verify that a paused video is
             # re-rendered to the new viewport without another decode.
             session.pop_frame()

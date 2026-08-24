@@ -47,6 +47,7 @@ class VideoSnapshot:
     fps: float = 0.0
     codec: str = ""
     frame_count: int = 0
+    frame_index: int = 0
     dropped_frames: int = 0
     audio_available: bool = False
     error: str = ""
@@ -124,6 +125,10 @@ class VideoSession:
         self._loop = bool(loop)
         self._stop = False
         self._seek_to: Optional[float] = None
+        # Frame seeks remain pending until the requested frame is published.
+        # This lets key-repeat accumulate against the newest requested target
+        # instead of losing presses while the decoder is still seeking.
+        self._seek_frame: Optional[int] = None
         self._rerender = False
         self._latest: Optional[tuple[int, Image.Image, float]] = None
         self._latest_sequence = 0
@@ -138,7 +143,7 @@ class VideoSession:
     def play(self) -> None:
         with self._condition:
             if self._snapshot.state == "ended":
-                self._seek_to = 0.0
+                self._seek_frame = 0
             self._paused = False
             if self._snapshot.state != "error":
                 self._snapshot = replace(self._snapshot, state="playing")
@@ -161,19 +166,44 @@ class VideoSession:
         """Pause and return to the first frame without destroying the session."""
         with self._condition:
             self._paused = True
-            self._seek_to = 0.0
+            self._seek_to = None
+            self._seek_frame = 0
             self._condition.notify_all()
 
     def seek(self, seconds: float) -> None:
         with self._condition:
             duration = self._snapshot.duration
             upper = max(0.0, duration - 0.001) if duration else max(0.0, seconds)
+            self._seek_frame = None
             self._seek_to = max(0.0, min(float(seconds), upper))
             self._condition.notify_all()
 
     def seek_relative(self, seconds: float) -> None:
         current = self.snapshot().position
         self.seek(current + float(seconds))
+
+    def step_frames(self, frames: int) -> None:
+        """Pause and move by an exact frame count.
+
+        The target is expressed in frame indices rather than seconds, avoiding
+        keyframe rounding in time-based seeks. Pending targets accumulate, so
+        fast keyboard repeat still moves one frame per event.
+        """
+        delta = int(frames)
+        if delta == 0:
+            return
+        with self._condition:
+            base = (self._seek_frame if self._seek_frame is not None
+                    else self._snapshot.frame_index)
+            target = max(0, base + delta)
+            if self._snapshot.frame_count:
+                target = min(target, self._snapshot.frame_count - 1)
+            self._paused = True
+            self._seek_to = None
+            self._seek_frame = target
+            if self._snapshot.state not in ("loading", "error"):
+                self._snapshot = replace(self._snapshot, state="paused")
+            self._condition.notify_all()
 
     def set_loop(self, enabled: bool) -> None:
         with self._condition:
@@ -226,7 +256,7 @@ class VideoSession:
             self._paused = True
             self._snapshot = replace(self._snapshot, state="error", error=message)
 
-    def _publish(self, source, position: float, cv2) -> None:
+    def _publish(self, source, position: float, frame_index: int, cv2) -> None:
         """Resize and publish one frame, replacing any unpainted predecessor."""
         with self._condition:
             viewport = self._viewport
@@ -248,7 +278,8 @@ class VideoSession:
             dropped = self._snapshot.dropped_frames + int(had_unpainted_frame)
             self._latest = (self._latest_sequence, image, max(0.0, position))
             self._snapshot = replace(
-                self._snapshot, position=max(0.0, position), dropped_frames=dropped
+                self._snapshot, position=max(0.0, position),
+                frame_index=max(0, int(frame_index)), dropped_frames=dropped
             )
 
     def _run(self) -> None:
@@ -285,27 +316,74 @@ class VideoSession:
             if not ok or source is None:
                 raise VideoBackendError("The video contains no decodable frames.")
             position = max(0.0, float(capture.get(cv2.CAP_PROP_POS_MSEC) or 0.0) / 1000.0)
-            self._publish(source, position, cv2)
+            frame_index = max(0, int(round(capture.get(cv2.CAP_PROP_POS_FRAMES) or 1)) - 1)
+            self._publish(source, position, frame_index, cv2)
             anchor_position = position
             anchor_wall = time.perf_counter()
             frame_period = 1.0 / fps
 
             while True:
                 seek_target: Optional[float] = None
+                frame_target: Optional[int] = None
                 rerender = False
                 with self._condition:
                     if self._stop:
                         return
-                    if self._seek_to is not None:
+                    if self._seek_frame is not None:
+                        # Do not clear this yet. New step commands may advance
+                        # it while decoding; clear only if this exact target is
+                        # still current after publication.
+                        frame_target = self._seek_frame
+                    elif self._seek_to is not None:
                         seek_target = self._seek_to
                         self._seek_to = None
                     rerender = self._rerender
                     self._rerender = False
                     paused = self._paused
 
-                    if paused and seek_target is None and not rerender:
+                    if (paused and frame_target is None
+                            and seek_target is None and not rerender):
                         self._condition.wait(timeout=0.20)
                         continue
+
+                if frame_target is not None:
+                    # Forward by one frame is already sitting at the decoder's
+                    # next position, so avoid a needless random seek. Reverse
+                    # and larger jumps still use indexed seeking.
+                    next_frame = max(
+                        0, int(round(capture.get(cv2.CAP_PROP_POS_FRAMES) or 0))
+                    )
+                    if frame_target != next_frame:
+                        capture.set(cv2.CAP_PROP_POS_FRAMES, frame_target)
+                    ok, source = capture.read()
+                    if not ok or source is None:
+                        raise VideoBackendError("Frame navigation failed for this video container.")
+                    decoded_frame = max(
+                        0, int(round(capture.get(cv2.CAP_PROP_POS_FRAMES) or 1)) - 1
+                    )
+                    # Most FFmpeg-backed captures land exactly. If a backend
+                    # reports an earlier keyframe, decode forward to the exact
+                    # requested frame without publishing intermediates.
+                    while decoded_frame < frame_target:
+                        ok, candidate = capture.read()
+                        if not ok or candidate is None:
+                            break
+                        source = candidate
+                        decoded_frame = max(
+                            decoded_frame + 1,
+                            int(round(capture.get(cv2.CAP_PROP_POS_FRAMES) or 1)) - 1,
+                        )
+                    position = decoded_frame / fps
+                    self._publish(source, position, decoded_frame, cv2)
+                    anchor_position = position
+                    anchor_wall = time.perf_counter()
+                    with self._condition:
+                        if self._seek_frame == frame_target:
+                            self._seek_frame = None
+                        if self._snapshot.state != "error":
+                            state = "paused" if self._paused else "playing"
+                            self._snapshot = replace(self._snapshot, state=state)
+                    continue
 
                 if seek_target is not None:
                     capture.set(cv2.CAP_PROP_POS_MSEC, seek_target * 1000.0)
@@ -319,7 +397,10 @@ class VideoSession:
                     if not ok or source is None:
                         raise VideoBackendError("Seeking failed for this video container.")
                     position = max(0.0, float(capture.get(cv2.CAP_PROP_POS_MSEC) or 0.0) / 1000.0)
-                    self._publish(source, position, cv2)
+                    frame_index = max(
+                        0, int(round(capture.get(cv2.CAP_PROP_POS_FRAMES) or 1)) - 1
+                    )
+                    self._publish(source, position, frame_index, cv2)
                     anchor_position = position
                     anchor_wall = time.perf_counter()
                     with self._condition:
@@ -331,8 +412,9 @@ class VideoSession:
                     with self._condition:
                         source = self._last_source
                         position = self._snapshot.position
+                        frame_index = self._snapshot.frame_index
                     if source is not None:
-                        self._publish(source, position, cv2)
+                        self._publish(source, position, frame_index, cv2)
                     if paused:
                         continue
 
@@ -368,13 +450,17 @@ class VideoSession:
                     continue
 
                 position = float(capture.get(cv2.CAP_PROP_POS_MSEC) or 0.0) / 1000.0
+                frame_index = max(
+                    0, int(round(capture.get(cv2.CAP_PROP_POS_FRAMES) or 1)) - 1
+                )
                 if position <= 0.0:
-                    position = float(capture.get(cv2.CAP_PROP_POS_FRAMES) or 1) / fps
-                self._publish(source, position, cv2)
+                    position = frame_index / fps
+                self._publish(source, position, frame_index, cv2)
 
                 with self._condition:
                     if self._snapshot.state != "error":
-                        self._snapshot = replace(self._snapshot, state="playing")
+                        state = "paused" if self._paused else "playing"
+                        self._snapshot = replace(self._snapshot, state=state)
                     # Wait only until this frame's target time. A command or
                     # seek wakes the condition immediately.
                     deadline = anchor_wall + max(0.0, position - anchor_position)

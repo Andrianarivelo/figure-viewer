@@ -39,6 +39,39 @@ class MediaClassificationTests(unittest.TestCase):
                 [("figure.png", D.KIND_IMAGE), ("movie.mp4", D.KIND_VIDEO)],
             )
 
+    def test_all_levels_finds_supported_files_at_every_nested_depth(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = (
+                root / "top.png",
+                root / "run_1" / "clip.mp4",
+                root / "run_1" / "figures" / "report.pdf",
+                root / "run_1" / "figures" / "final" / "plot.TIFF",
+            )
+            for path in paths:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"classification does not decode content")
+            (root / "run_1" / "figures" / "ignore.txt").write_text(
+                "unsupported", encoding="utf-8"
+            )
+
+            entries, truncated = D.scan_folder(
+                root,
+                kinds=D.kinds_for_filter(D.FILTER_ALL),
+                max_depth=D.DEPTH_UNLIMITED,
+            )
+
+            self.assertFalse(truncated)
+            self.assertEqual({entry.path for entry in entries}, set(paths))
+            self.assertEqual({entry.depth for entry in entries}, {0, 1, 2, 3})
+
+            limited, _ = D.scan_folder(
+                root,
+                kinds=D.kinds_for_filter(D.FILTER_ALL),
+                max_depth=2,
+            )
+            self.assertNotIn(paths[-1], {entry.path for entry in limited})
+
 
 if __name__ == "__main__":
     unittest.main()

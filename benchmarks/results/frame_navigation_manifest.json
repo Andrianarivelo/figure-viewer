@@ -1,0 +1,20 @@
+{
+  "generated_at_local": "2026-08-24 09:18:20",
+  "baseline_commit": "07c673a657857a7ce8f9bd0440c783022fe3fe65",
+  "pairs": 12,
+  "video": {
+    "size": [
+      640,
+      360
+    ],
+    "fps": 30.0,
+    "frames": 90
+  },
+  "nested_files_by_depth": [
+    40,
+    30,
+    20,
+    10
+  ],
+  "raw_data": "frame_navigation_raw.csv"
+}

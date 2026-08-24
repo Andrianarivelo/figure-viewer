@@ -34,12 +34,19 @@ APP_DIR = Path(__file__).resolve().parent.parent
 SETTINGS_DIR = Path.home() / "AppData" / "Roaming" / "FigureViewerApp"
 SETTINGS_PATH = SETTINGS_DIR / "settings.json"
 
+# Settings schema 2 changes folder discovery from top-level-only to all levels
+# by default. The old default was indistinguishable from an explicit choice,
+# so existing schema-1 profiles are migrated once and every later user choice
+# is preserved normally.
+SETTINGS_SCHEMA_VERSION = 2
+
 #: Where a running instance advertises the loopback port it listens on, so that
 #: a second launch (a double-clicked PNG, say) can hand its file over instead of
 #: starting a whole second copy of the app. See :class:`InstanceServer`.
 INSTANCE_PATH = SETTINGS_DIR / "instance.json"
 
 DEFAULT_SETTINGS: dict = {
+    "settings_schema": SETTINGS_SCHEMA_VERSION,
     "theme": "dark",
     "geometry": "1560x960+70+50",
     "last_folder": "",
@@ -49,7 +56,7 @@ DEFAULT_SETTINGS: dict = {
     "sort_desc": False,
     # Sub-folder levels to include when listing a folder: 0 = that folder
     # only, n = n levels below it, -1 = the whole tree. See docs.scan_folder.
-    "scan_depth": 0,
+    "scan_depth": D.DEPTH_UNLIMITED,
     # Reuse an already-open window when a file is opened from Explorer. This is
     # what makes the app pleasant as the system default viewer: clicking ten
     # PNGs in a row fills one window instead of opening ten.
@@ -73,6 +80,8 @@ DEFAULT_SETTINGS: dict = {
     # also exposed directly on the transport bar.
     "video_autoplay": True,
     "video_loop": False,
+    # Up/Down jump this many video frames. Left/Right always move one frame.
+    "video_frame_step": 10,
 }
 
 
@@ -96,6 +105,31 @@ def load_settings() -> dict:
     # a scan_depth because the default provides one.
     if "scan_depth" not in stored and stored.get("recursive"):
         values["scan_depth"] = D.DEPTH_UNLIMITED
+    # Version 3.0 stored its top-level-only default as an ordinary value, which
+    # is why an apparently valid folder silently omitted deeper results. Move
+    # old profiles to the safer all-level default once. A choice made after
+    # this migration remains untouched because the current schema is saved.
+    try:
+        stored_schema = int(stored.get("settings_schema", 1) or 1)
+    except (TypeError, ValueError):
+        stored_schema = 1
+    if stored_schema < SETTINGS_SCHEMA_VERSION:
+        try:
+            stored_depth = int(stored.get("scan_depth", 0))
+        except (TypeError, ValueError):
+            stored_depth = 0
+        if stored_depth == 0:
+            values["scan_depth"] = D.DEPTH_UNLIMITED
+    values["settings_schema"] = SETTINGS_SCHEMA_VERSION
+    try:
+        depth = int(values["scan_depth"])
+        values["scan_depth"] = depth if depth >= D.DEPTH_UNLIMITED else D.DEPTH_UNLIMITED
+    except (KeyError, TypeError, ValueError):
+        values["scan_depth"] = DEFAULT_SETTINGS["scan_depth"]
+    try:
+        values["video_frame_step"] = max(1, min(10_000, int(values["video_frame_step"])))
+    except (KeyError, TypeError, ValueError):
+        values["video_frame_step"] = DEFAULT_SETTINGS["video_frame_step"]
     values.pop("recursive", None)
     return values
 

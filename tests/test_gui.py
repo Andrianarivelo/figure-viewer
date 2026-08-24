@@ -69,6 +69,50 @@ class ViewerWindowVideoTests(unittest.TestCase):
                     self.assertIn(window._video_session.snapshot().state,
                                   {"playing", "paused", "ended"})
 
+                    # Window dispatch matches the documented keyboard model:
+                    # Left/Right are one frame and Up/Down use the setting.
+                    session = window._video_session
+                    session.stop_playback()
+                    deadline = time.perf_counter() + 2.0
+                    while (time.perf_counter() < deadline
+                           and session.snapshot().frame_index != 0):
+                        application.root.update()
+                        time.sleep(0.005)
+                    self.assertEqual(session.snapshot().frame_index, 0)
+
+                    window._next_action()
+                    deadline = time.perf_counter() + 2.0
+                    while (time.perf_counter() < deadline
+                           and session.snapshot().frame_index != 1):
+                        application.root.update()
+                        time.sleep(0.005)
+                    self.assertEqual(session.snapshot().frame_index, 1)
+
+                    window.video_frame_step.set(10)
+                    window._video_jump_forward_or_next_file()
+                    deadline = time.perf_counter() + 2.0
+                    while (time.perf_counter() < deadline
+                           and session.snapshot().frame_index != 11):
+                        application.root.update()
+                        time.sleep(0.005)
+                    self.assertEqual(session.snapshot().frame_index, 11)
+
+                    window._video_jump_back_or_previous_file()
+                    deadline = time.perf_counter() + 2.0
+                    while (time.perf_counter() < deadline
+                           and session.snapshot().frame_index != 1):
+                        application.root.update()
+                        time.sleep(0.005)
+                    self.assertEqual(session.snapshot().frame_index, 1)
+
+                    window._previous_action()
+                    deadline = time.perf_counter() + 2.0
+                    while (time.perf_counter() < deadline
+                           and session.snapshot().frame_index != 0):
+                        application.root.update()
+                        time.sleep(0.005)
+                    self.assertEqual(session.snapshot().frame_index, 0)
+
                     # Theme switching rebuilds every window. The old decoder
                     # must stop before the new light/dark window reopens the
                     # same selected video.

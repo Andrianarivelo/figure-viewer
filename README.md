@@ -1,4 +1,4 @@
-# Figure Viewer 3.0
+# Figure Viewer 3.1
 
 A fast, themed, folder-based viewer for **images, videos, and PDFs** on Windows.
 Point it at a folder, keep it open, and let your analysis scripts overwrite the
@@ -88,14 +88,36 @@ matters, use **Open in Default App**.
 
 ---
 
+## What is new in 3.1
+
+**Exact frame navigation.** While a video is selected, Left and Right pause
+playback and move exactly one frame. Up and Down jump 10 frames by default;
+change that value under **Tools > Video Frame Jump**. Outside video playback,
+the same arrows retain normal previous/next-file navigation. Direct timeline
+scrubbing remains available.
+
+**Complete nested discovery by default.** New and upgraded installations scan
+all subfolder levels unless a narrower value is deliberately selected under
+**Tools > Subfolder Depth**. Existing depth choices and the 20,000-file safety
+limit remain available.
+
+In 12 paired runs against committed 3.0, exact forward/back frame commands took
+3.95 ms median versus 5.29 ms for the old time seek (25.3% faster, paired
+Wilcoxon p = 0.000488). Both were exact on the generated MJPG test clip. The
+nested fixture confirms the functional change: 100/100 supported files are
+found by default instead of 40/100. See the
+[validation figure](benchmarks/results/frame_navigation_v31.png),
+[raw results](benchmarks/results/frame_navigation_raw.csv), and
+[reproducible benchmark](benchmarks/benchmark_v31.py).
+
+---
+
 ## What is new in 3.0
 
 **Fast in-app video.** MP4, MOV, AVI, MKV, WebM, WMV, MPEG, OGV, MTS, M2TS,
-and TS files now appear beside figures and PDFs. The transport bar provides
-play, pause, five-second seeking, direct scrubbing, stop, and loop. `Space` and
-double-click toggle playback. Left and right seek while a video is selected;
-up and down continue to navigate files. The current full-resolution frame can
-be copied or saved.
+and TS files now appear beside figures and PDFs. Version 3.0 introduced play,
+pause, direct scrubbing, stop, loop, keyboard control, and copying or saving the
+current full-resolution frame.
 
 Playback does not run through the still-image cache. One dedicated thread owns
 the OpenCV/FFmpeg decoder, resizes frames to the viewport before handing them to
@@ -265,8 +287,8 @@ Press **F1** in the app for the full list. The essentials:
 
 | Key | Action |
 |---|---|
-| `↑` `↓` | Previous / next file |
-| `←` `→` | Previous / next file, or seek 5 seconds in video |
+| `↑` `↓` | Previous / next file, or configurable frame jump in video |
+| `←` `→` | Previous / next file, or one frame in video |
 | `Space` / double click | Play / pause video |
 | `PageUp` `PageDown` | Previous / next page |
 | Wheel | Zoom towards the pointer |
