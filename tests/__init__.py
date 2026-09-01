@@ -1,1 +1,1 @@
-"""Automated checks for Figure Viewer."""
+"""Automated checks for FigView."""

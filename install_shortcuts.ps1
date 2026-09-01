@@ -1,4 +1,4 @@
-# Create (or refresh) the Start Menu and Desktop shortcuts for Figure Viewer.
+# Create (or refresh) the Start Menu and Desktop shortcuts for FigView.
 #
 # The shortcuts point straight at pythonw.exe rather than at the .bat file, so
 # launching the app never flashes a console window. launch_figure_viewer.py is
@@ -58,23 +58,38 @@ function New-ViewerShortcut {
     Write-Host "  created  $Path"
 }
 
-Write-Host "Figure Viewer shortcuts"
+Write-Host "FigView shortcuts"
 Write-Host "  app dir  $AppDir"
 Write-Host "  python   $Pythonw"
 
-New-ViewerShortcut -Path (Join-Path $StartMenu "Figure Viewer.lnk") -Arguments "" `
-    -Description "Figure Viewer - browse images, videos and PDFs in any folder"
+# Rename legacy links in place first, preserving any folder-specific arguments.
+foreach ($location in @($StartMenu, $Desktop)) {
+    Get-ChildItem -LiteralPath $location -Filter "Figure Viewer*.lnk" `
+                  -ErrorAction SilentlyContinue | ForEach-Object {
+        $newName = $_.Name -replace '^Figure Viewer', 'FigView'
+        $newPath = Join-Path $location $newName
+        if (Test-Path -LiteralPath $newPath) {
+            Remove-Item -LiteralPath $_.FullName -Force
+        } else {
+            Move-Item -LiteralPath $_.FullName -Destination $newPath
+        }
+        Write-Host "  migrated $($_.Name) -> $newName"
+    }
+}
+
+New-ViewerShortcut -Path (Join-Path $StartMenu "FigView.lnk") -Arguments "" `
+    -Description "FigView - browse images, videos and PDFs in any folder"
 
 if (-not $NoDesktop) {
-    New-ViewerShortcut -Path (Join-Path $Desktop "Figure Viewer.lnk") -Arguments "" `
-        -Description "Figure Viewer - browse images, videos and PDFs in any folder"
+    New-ViewerShortcut -Path (Join-Path $Desktop "FigView.lnk") -Arguments "" `
+        -Description "FigView - browse images, videos and PDFs in any folder"
 }
 
 if ($Folder -ne "") {
     $leaf = Split-Path $Folder -Leaf
-    New-ViewerShortcut -Path (Join-Path $StartMenu "Figure Viewer - $leaf.lnk") `
+    New-ViewerShortcut -Path (Join-Path $StartMenu "FigView - $leaf.lnk") `
         -Arguments (' "{0}"' -f $Folder) `
-        -Description "Figure Viewer opened on $Folder"
+        -Description "FigView opened on $Folder"
 }
 
-Write-Host "Done. Press the Windows key and type 'Figure Viewer'."
+Write-Host "Done. Press the Windows key and type 'FigView'."

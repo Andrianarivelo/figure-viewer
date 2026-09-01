@@ -1,4 +1,4 @@
-"""The Figure Viewer window.
+"""The FigView window.
 
 One :class:`ViewerWindow` owns one folder. Several windows can be open at the
 same time (File > New Window) and they share the worker pool, the document
@@ -765,7 +765,7 @@ class ViewerWindow(tk.Toplevel):
         tools_menu.add_command(label="Rescan Folder", accelerator="F5", command=self.reload_all)
         tools_menu.add_command(label="Clear Caches", command=self.clear_caches)
         tools_menu.add_separator()
-        tools_menu.add_command(label="Set as Default Media / PDF Viewer…",
+        tools_menu.add_command(label="Set as Default PDF Reader…",
                                command=self.register_file_types)
 
         help_menu = self.menubar.add_menu("Help", underline=0)
@@ -2486,7 +2486,7 @@ class ViewerWindow(tk.Toplevel):
 
     # ------------------------------------------------- shell integration
     def register_file_types(self) -> None:
-        """Run register_file_types.ps1 so Windows can offer this app as default.
+        """Register FigView for PDF and open Windows' default-app confirmation.
 
         Windows does not let a program silently seize a file association: the
         final choice is protected by a per-user hash that only Explorer and the
@@ -2499,21 +2499,21 @@ class ViewerWindow(tk.Toplevel):
             messagebox.showerror("Missing script", f"Not found:\n{script}", parent=self)
             return
         if not messagebox.askokcancel(
-                "Set as default viewer",
-                "Figure Viewer will be registered with Windows for images, videos, and PDFs.\n\n"
+                "Set as default PDF reader",
+                f"{APP_NAME} will be registered with Windows for PDF documents.\n\n"
                 "Nothing outside your own user account is modified, and\n"
                 "unregister_file_types.ps1 undoes it.\n\n"
-                "Windows then opens its Default apps page: pick Figure Viewer\n"
+                f"Windows then opens its Default apps page: pick {APP_NAME}\n"
                 "there to finish, because only Windows itself may set the final\n"
                 "association.", parent=self):
             return
         try:
             subprocess.Popen(
                 ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
-                 "-File", str(script)],
+                 "-File", str(script), "-Extensions", ".pdf"],
                 cwd=str(self.app.app_dir),
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-            self.toast("Registering file types…")
+            self.toast(f"Registering {APP_NAME} for PDF…")
         except Exception as exc:
             messagebox.showerror("Registration failed", str(exc), parent=self)
 

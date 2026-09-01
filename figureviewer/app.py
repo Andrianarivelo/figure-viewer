@@ -12,6 +12,10 @@ Shared across all windows:
                     figure decode it once;
 * ``thumb_cache`` - rendered thumbnails, keyed by path + mtime + size;
 * ``settings``    - persisted to ``%APPDATA%/FigureViewerApp/settings.json``.
+
+``FigureViewerApp`` is intentionally retained as the private storage identity
+after the public application name changed to FigView. Keeping it preserves
+settings and lets old and new launchers share the same single-instance channel.
 """
 from __future__ import annotations
 
@@ -148,7 +152,7 @@ class InstanceServer:
 
     Why this exists
     ---------------
-    Once Figure Viewer is the system default for PNGs and PDFs, every
+    Once FigView is the system default for PNGs and PDFs, every
     double-click in Explorer starts a fresh Python process: about a second of
     interpreter start-up, a new window, and a second copy of every cached
     document. Instead, the first instance listens on an ephemeral loopback port

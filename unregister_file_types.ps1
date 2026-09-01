@@ -1,16 +1,16 @@
-# Undo register_file_types.ps1: remove every Figure Viewer file-type entry.
+# Undo register_file_types.ps1: remove every FigView file-type entry.
 #
 # This deletes only keys this app created, all of them under HKEY_CURRENT_USER:
 #
 #   HKCU\Software\Classes\FigureViewer.<ext>              the ProgIDs
 #   HKCU\Software\Classes\<ext>\OpenWithProgids\...       the "Open with" offers
 #   HKCU\Software\FigureViewer                            the capability block
-#   HKCU\Software\RegisteredApplications\Figure Viewer    the app registration
+#   HKCU\Software\RegisteredApplications\FigView          the app registration
 #
 # It never touches another program's ProgID, and it never touches the extension
-# keys themselves - only the Figure Viewer value inside their OpenWithProgids.
+# keys themselves - only this app's value inside their OpenWithProgids.
 #
-# If Figure Viewer was the *default* for a type, Windows falls back to whatever
+# If FigView was the *default* for a type, Windows falls back to whatever
 # else is registered for it. Windows owns that choice (see the long note in
 # register_file_types.ps1), so re-pick a default in
 # Settings > Apps > Default apps if a type is left without one.
@@ -28,7 +28,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$AppKey       = "Figure Viewer"
+$AppKeys      = @("FigView", "Figure Viewer")
 $ProgIdPrefix = "FigureViewer"
 $classes      = "HKCU:\Software\Classes"
 
@@ -86,9 +86,12 @@ if (Test-Path "HKCU:\Software\FigureViewer") {
 $regApps = "HKCU:\Software\RegisteredApplications"
 if (Test-Path $regApps) {
     $props = Get-ItemProperty -Path $regApps -ErrorAction SilentlyContinue
-    if ($null -ne $props -and $null -ne $props.PSObject.Properties[$AppKey]) {
-        Remove-Thing -What "RegisteredApplications\$AppKey" `
-                     -Action { Remove-ItemProperty -Path $regApps -Name $AppKey -Force }
+    foreach ($appKey in $AppKeys) {
+        if ($null -ne $props -and $null -ne $props.PSObject.Properties[$appKey]) {
+            $keyToRemove = $appKey
+            Remove-Thing -What "RegisteredApplications\$keyToRemove" `
+                         -Action { Remove-ItemProperty -Path $regApps -Name $keyToRemove -Force }
+        }
     }
 }
 
@@ -105,7 +108,7 @@ public static extern void SHChangeNotify(int eventId, uint flags, System.IntPtr 
 
 Write-Host ""
 if ($removed -eq 0) {
-    Write-Host "Nothing to remove: Figure Viewer was not registered for any file type."
+    Write-Host "Nothing to remove: FigView was not registered for any file type."
 } elseif ($WhatIfOnly) {
     Write-Host "$removed entries would be removed. Re-run without -WhatIfOnly to do it."
 } else {

@@ -1,4 +1,4 @@
-"""Robust launcher for Figure Viewer.
+"""Robust backward-compatible launcher for FigView.
 
 The shortcut points here instead of directly to the GUI script so startup
 failures are written to a log file. This matters when `pythonw.exe` is used:
@@ -28,8 +28,9 @@ APP_DIR = Path(__file__).resolve().parent
 APP_SCRIPT = APP_DIR / "figure_viewer_app.py"
 LOG_PATH = APP_DIR / "figure_viewer_launcher.log"
 
-#: Set this to an absolute python.exe / pythonw.exe path to override everything.
-ENV_OVERRIDE = "FIGURE_VIEWER_PYTHON"
+#: Public override plus the historical name retained for compatibility.
+ENV_OVERRIDE = "FIGVIEW_PYTHON"
+LEGACY_ENV_OVERRIDE = "FIGURE_VIEWER_PYTHON"
 
 
 def _candidates() -> Iterator[Path]:
@@ -42,6 +43,9 @@ def _candidates() -> Iterator[Path]:
     override = os.environ.get(ENV_OVERRIDE, "").strip()
     if override:
         yield Path(override)
+    legacy_override = os.environ.get(LEGACY_ENV_OVERRIDE, "").strip()
+    if legacy_override:
+        yield Path(legacy_override)
 
     if sys.executable:
         yield Path(sys.executable)

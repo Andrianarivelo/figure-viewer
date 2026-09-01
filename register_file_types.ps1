@@ -1,4 +1,4 @@
-# Register Figure Viewer with Windows as an image, video, and PDF viewer.
+# Register FigView with Windows as an image, video, and PDF viewer.
 #
 # What this does, and what it deliberately does not do
 # ----------------------------------------------------
@@ -15,9 +15,9 @@
 # So this script does everything that IS legitimate:
 #
 #   1. a ProgID per extension, with the app's icon, a friendly type name and an
-#      open command  ->  Figure Viewer appears in "Open with";
+#      open command  ->  FigView appears in "Open with";
 #   2. an OpenWithProgids entry on each extension  ->  it stays in that list;
-#   3. a RegisteredApplications capability block  ->  Figure Viewer appears in
+#   3. a RegisteredApplications capability block  ->  FigView appears in
 #      Settings > Default apps as a real application, where one click per type
 #      (or the "Set default" button on Windows 11) makes it the default.
 #
@@ -53,8 +53,12 @@ if (-not (Test-Path $Script)) { throw "Missing GUI script: $Script" }
 . (Join-Path $AppDir "viewer_python.ps1")
 
 # --------------------------------------------------------------- identity
-$AppKey      = "Figure Viewer"                       # RegisteredApplications name
-$CapPath     = "Software\FigureViewer\Capabilities"  # relative: that is the format
+$AppKey       = "FigView"                            # public Windows app name
+$LegacyAppKey = "Figure Viewer"                      # removed after migration
+# These identifiers deliberately stay stable. Windows UserChoice hashes may
+# already reference FigureViewer.pdf, and replacing that ProgID would invalidate
+# a user's existing association even though only the public app name changed.
+$CapPath      = "Software\FigureViewer\Capabilities"
 $ProgIdPrefix = "FigureViewer"
 
 # ------------------------------------------------------------ extensions
@@ -104,7 +108,7 @@ $Python  = Resolve-ViewerPython
 $Pythonw = Get-WindowlessPython -Python $Python
 $Command = '"{0}" "{1}" "%1"' -f $Pythonw, $Script
 
-Write-Host "Figure Viewer file-type registration"
+Write-Host "FigView file-type registration"
 Write-Host "  app dir  $AppDir"
 Write-Host "  python   $Pythonw"
 Write-Host "  types    $($Targets -join ' ')"
@@ -150,6 +154,14 @@ function Set-RegValue {
 
 $classes = "HKCU:\Software\Classes"
 
+# Capabilities describe the exact set offered by Windows' "Set default" button.
+# Rebuild this app-owned subkey on every run so `-Extensions .pdf` cannot leave
+# stale image/video values from a previous broader registration behind.
+$associationsPath = "HKCU:\$CapPath\FileAssociations"
+if (Test-Path $associationsPath) {
+    Remove-Item -Path $associationsPath -Recurse -Force
+}
+
 foreach ($ext in $Targets) {
     $progId = "$ProgIdPrefix$ext"                      # e.g. FigureViewer.png
     $label  = $TypeNames[$ext]
@@ -166,9 +178,9 @@ foreach ($ext in $Targets) {
     Set-RegValue -Path (Join-Path $progPath "shell") -Name "(Default)" -Value "open"
 
     $openPath = Join-Path $progPath "shell\open"
-    Set-RegValue -Path $openPath -Name "(Default)"       -Value "&Open with Figure Viewer"
+    Set-RegValue -Path $openPath -Name "(Default)"       -Value "&Open with FigView"
     # Without this the "Open with" list would say "pythonw", the interpreter.
-    Set-RegValue -Path $openPath -Name "FriendlyAppName" -Value "Figure Viewer"
+    Set-RegValue -Path $openPath -Name "FriendlyAppName" -Value "FigView"
     Set-RegValue -Path (Join-Path $openPath "command") -Name "(Default)" -Value $Command
 
     # 2. offer the app for this extension without disturbing the current default
@@ -181,13 +193,36 @@ foreach ($ext in $Targets) {
     Write-Host ("  registered  {0,-6}  ->  {1}" -f $ext, $progId)
 }
 
-Set-RegValue -Path "HKCU:\$CapPath" -Name "ApplicationName" -Value "Figure Viewer"
+# Existing raster ProgIDs may remain outside `$Targets` during a PDF-only run.
+# Refresh their visible verb/app labels too, without deleting or replacing the
+# stable IDs that a protected UserChoice may already reference.
+Get-ChildItem -Path $classes -ErrorAction SilentlyContinue |
+    Where-Object { $_.PSChildName -like "$ProgIdPrefix.*" } |
+    ForEach-Object {
+        $openPath = Join-Path $_.PSPath "shell\open"
+        if (Test-Path $openPath) {
+            Set-RegValue -Path $openPath -Name "(Default)" -Value "&Open with FigView"
+            Set-RegValue -Path $openPath -Name "FriendlyAppName" -Value "FigView"
+        }
+    }
+
+Set-RegValue -Path "HKCU:\$CapPath" -Name "ApplicationName" -Value "FigView"
 Set-RegValue -Path "HKCU:\$CapPath" -Name "ApplicationDescription" `
              -Value "Fast folder-based viewer for images, videos and PDFs, with live reload, snipping and multi-level subfolder browsing."
 if (Test-Path $Icon) {
     Set-RegValue -Path "HKCU:\$CapPath" -Name "ApplicationIcon" -Value "$Icon,0"
 }
 Set-RegValue -Path "HKCU:\Software\RegisteredApplications" -Name $AppKey -Value $CapPath
+
+# Avoid presenting both the old and new public names in Default apps. The
+# capability path and ProgIDs remain in place, so this does not break existing
+# associations.
+$registeredApps = "HKCU:\Software\RegisteredApplications"
+$registered = Get-ItemProperty -Path $registeredApps -ErrorAction SilentlyContinue
+if ($null -ne $registered -and
+        $null -ne $registered.PSObject.Properties[$LegacyAppKey]) {
+    Remove-ItemProperty -Path $registeredApps -Name $LegacyAppKey -Force
+}
 
 # ------------------------------------------------- tell the shell to refresh
 # Without this, Explorer keeps showing the old icons and the old "Open with"
@@ -207,11 +242,11 @@ Write-Host ""
 Write-Host "Registered under HKEY_CURRENT_USER. No administrator rights were used."
 Write-Host ""
 Write-Host "One step is left, and only Windows itself is allowed to do it:"
-Write-Host "  Settings > Apps > Default apps > Figure Viewer,"
-Write-Host "  then press 'Set default', or pick a file type and choose Figure Viewer."
+Write-Host "  Settings > Apps > Default apps > FigView,"
+Write-Host "  then press 'Set default', or pick a file type and choose FigView."
 Write-Host ""
 Write-Host "Per file: right-click any PNG or PDF > Open with > Choose another app >"
-Write-Host "  Figure Viewer > 'Always use this app'."
+Write-Host "  FigView > 'Always use this app'."
 
 if (-not $NoSettings) {
     try {

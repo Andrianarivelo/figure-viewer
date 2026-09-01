@@ -1,4 +1,4 @@
-"""DPI-aware line icons for Figure Viewer's native Tk controls.
+"""DPI-aware line icons for FigView's native Tk controls.
 
 Toolbar glyphs used to be font characters. Their shape and even availability
 changed with the active font, and a few Windows configurations displayed empty

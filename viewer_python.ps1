@@ -1,4 +1,4 @@
-# Shared helper: find a Python interpreter that can actually run Figure Viewer.
+# Shared helper: find a Python interpreter that can actually run FigView.
 #
 # Dot-source it, do not run it:
 #
@@ -15,14 +15,16 @@ function Resolve-ViewerPython {
         .SYNOPSIS
             Return the path of a python.exe that can import PIL and tkinter.
         .DESCRIPTION
-            Candidates are tried best-first: the FIGURE_VIEWER_PYTHON override,
-            then the usual per-user conda installs, then whatever is on PATH.
+            Candidates are tried best-first: the FIGVIEW_PYTHON override, its
+            historical FIGURE_VIEWER_PYTHON alias, the usual per-user conda
+            installs, then whatever is on PATH.
             If none of them has the dependencies, the first interpreter that
             merely exists is returned with a warning, so the GUI can still start
             and show its own "Pillow is required" dialog.
     #>
     $candidates = New-Object System.Collections.Generic.List[string]
 
+    if ($env:FIGVIEW_PYTHON) { $candidates.Add($env:FIGVIEW_PYTHON) }
     if ($env:FIGURE_VIEWER_PYTHON) { $candidates.Add($env:FIGURE_VIEWER_PYTHON) }
     foreach ($root in @("$env:USERPROFILE\miniconda3", "$env:USERPROFILE\anaconda3",
                         "$env:LOCALAPPDATA\miniconda3", "$env:LOCALAPPDATA\anaconda3")) {
@@ -52,7 +54,7 @@ function Resolve-ViewerPython {
         Write-Warning "No interpreter with Pillow found; using $firstExisting anyway."
         return $firstExisting
     }
-    throw "No Python interpreter found. Install Python or set FIGURE_VIEWER_PYTHON."
+    throw "No Python interpreter found. Install Python or set FIGVIEW_PYTHON."
 }
 
 function Get-WindowlessPython {

@@ -1,4 +1,4 @@
-"""Figure Viewer: a fast, themed image and PDF browser for Windows.
+"""FigView: a fast, themed image, video, and PDF browser for Windows.
 
 Package layout
 --------------
@@ -14,8 +14,8 @@ Package layout
 
 __all__ = ["APP_NAME", "APP_VERSION", "VIDEO_SUFFIXES"]
 
-APP_NAME = "Figure Viewer"
-APP_VERSION = "3.1"
+APP_NAME = "FigView"
+APP_VERSION = "3.2"
 
 # Shared by scanning and playback. Keeping this tiny table in the package root
 # avoids an additional filesystem import on the image/PDF startup path.

@@ -1,4 +1,4 @@
-# Figure Viewer 3.1
+# FigView 3.2
 
 A fast, themed, folder-based viewer for **images, videos, and PDFs** on Windows.
 Point it at a folder, keep it open, and let your analysis scripts overwrite the
@@ -9,7 +9,7 @@ zoom, your pan, your playback position, or your place in the list.
 
 ## Launch
 
-- Double-click `Figure Viewer.bat`, or the Desktop / Start Menu shortcut.
+- Double-click `FigView.bat`, or the Desktop / Start Menu shortcut.
 - Pass a folder **or a file** as the first argument:
 
 ```powershell
@@ -38,22 +38,22 @@ from the folder you moved to is the entire fix. Add `-Folder <path>` to also get
 a shortcut that opens straight into one figure directory.
 
 The interpreter is chosen at install time by probing candidates for Pillow and
-tkinter, rather than being hardcoded. Override it with the
-`FIGURE_VIEWER_PYTHON` environment variable if you need a specific one.
+tkinter, rather than being hardcoded. Override it with `FIGVIEW_PYTHON` if you
+need a specific one. The historical `FIGURE_VIEWER_PYTHON` name still works.
 
-### Make it the default media and PDF viewer
+### Make it the default PDF reader
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File D:\Apps\figure-viewer\register_file_types.ps1
+powershell -ExecutionPolicy Bypass -File D:\Apps\figure-viewer\register_file_types.ps1 -Extensions .pdf
 ```
 
-or, from inside the app, **Tools > Set as Default Media / PDF Viewer**.
+or, from inside the app, **Tools > Set as Default PDF Reader**.
 
-The script registers Figure Viewer with Windows for the supported raster image
-types, PDF, and common video types such as MP4, MOV, AVI, MKV, WebM, WMV, MPEG,
-MTS, and transport streams. Add `-IncludeVector` for SVG, EPS, XPS, CBZ, and
-EPUB, or `-Extensions png,pdf,mp4` to choose an exact set. Everything it writes
-lives under `HKEY_CURRENT_USER`, so no administrator rights are needed, and
+The command above registers FigView only for PDF. The same script can register
+other supported raster image and video types when explicitly requested. Add
+`-IncludeVector` for SVG, EPS, XPS, CBZ, and EPUB, or use
+`-Extensions png,pdf,mp4` to choose an exact set. Everything it writes lives
+under `HKEY_CURRENT_USER`, so no administrator rights are needed, and
 `unregister_file_types.ps1` removes all of it.
 
 **One click is left over, and that is Windows' doing, not an oversight.** Since
@@ -62,9 +62,9 @@ protected by a per-user hash that only Explorer and the Settings app can
 produce; programs that write it directly get reverted or break the association.
 So the script does everything legitimate - the ProgIDs, the icons, the *Open
 with* entries and the app capability block - and then opens
-**Settings > Apps > Default apps > Figure Viewer**, where *Set default* (or one
+**Settings > Apps > Default apps > FigView**, where *Set default* (or one
 click per file type) finishes the job. Per file, the other route is right-click
-> *Open with* > *Choose another app* > **Figure Viewer** > *Always use this app*.
+> *Open with* > *Choose another app* > **FigView** > *Always use this app*.
 
 Once it is the default, double-clicking figures is cheap: a second launch hands
 its path to the window that is already open instead of starting another Python
@@ -309,7 +309,9 @@ Press **F1** in the app for the full list. The essentials:
 ## Layout
 
 ```
-figure_viewer_app.py       entry point (name kept for the existing shortcuts)
+FigView.bat                canonical double-click launcher
+Figure Viewer.bat          compatibility wrapper for the former name
+figure_viewer_app.py       stable Python entry point for existing integrations
 launch_figure_viewer.py    logging launcher used by the .bat and shortcuts
 install_shortcuts.ps1      Desktop / Start Menu shortcuts
 register_file_types.ps1    register with Windows as a media and PDF viewer
@@ -325,7 +327,8 @@ figureviewer/
     app.py                 Tk root, settings, window registry, single instance
 ```
 
-Settings live in `%APPDATA%\FigureViewerApp\settings.json`.
+Settings remain in `%APPDATA%\FigureViewerApp\settings.json` so the rename does
+not discard preferences or break single-instance handoff with an older launcher.
 
 Generated branding lives in `assets/figure-viewer-mark.png`; the 256 px runtime
 copy and `figure-viewer.ico` are derived from that master.

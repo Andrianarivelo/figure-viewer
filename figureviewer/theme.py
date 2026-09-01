@@ -1,4 +1,4 @@
-"""Visual identity for Figure Viewer.
+"""Visual identity for FigView.
 
 Everything colour- or font-related lives here so the rest of the app never
 hard-codes a hex value. Two palettes are provided (dark and light); both are

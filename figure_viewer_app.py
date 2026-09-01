@@ -1,4 +1,4 @@
-"""Figure Viewer - entry point.
+"""FigView - backward-compatible entry point.
 
 Keeps the historical file name so the desktop shortcut, the .bat launcher and
 any script that calls::
@@ -20,6 +20,7 @@ from pathlib import Path
 
 APP_DIR = Path(__file__).resolve().parent
 ERROR_LOG = APP_DIR / "figure_viewer_error.log"
+DISPLAY_NAME = "FigView"
 
 # Make sure the package next to this file wins over anything else on sys.path.
 if str(APP_DIR) not in sys.path:
@@ -48,7 +49,7 @@ def main() -> int:
     try:
         from PIL import Image  # noqa: F401  - fail early with a clear message
     except Exception:
-        _report("Figure Viewer - missing dependency",
+        _report(f"{DISPLAY_NAME} - missing dependency",
                 "Pillow is required.\n\nInstall it with:\n    pip install pillow\n\n"
                 + traceback.format_exc())
         return 2
@@ -56,13 +57,13 @@ def main() -> int:
     try:
         from figureviewer.app import main as run
     except Exception:
-        _report("Figure Viewer - startup failed", traceback.format_exc())
+        _report(f"{DISPLAY_NAME} - startup failed", traceback.format_exc())
         return 3
 
     try:
         return run()
     except Exception:
-        _report("Figure Viewer - crashed", traceback.format_exc())
+        _report(f"{DISPLAY_NAME} - crashed", traceback.format_exc())
         return 1
 
 
