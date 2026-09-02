@@ -212,6 +212,39 @@ DEPTH_UNLIMITED = -1
 MAX_SCAN_ENTRIES = 20_000
 
 
+def entries_for_paths(paths: list[Path], *, kinds: set[str]) -> list[Entry]:
+    """Return metadata for an ordered, explicitly opened set of files.
+
+    Missing, unsupported, and filtered-out paths are skipped. Unlike a folder
+    scan, order is intentionally preserved so each newly opened document lands
+    at the end of the session list. Files are de-duplicated by their resolved
+    path without reading or altering their contents.
+    """
+    entries: list[Entry] = []
+    seen: set[str] = set()
+    for raw in paths:
+        path = Path(raw)
+        try:
+            path = path.expanduser().resolve()
+        except OSError:
+            pass
+        identity = os.path.normcase(str(path))
+        if identity in seen:
+            continue
+        seen.add(identity)
+        kind = suffix_kind(path.suffix)
+        if kind is None or kind not in kinds:
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        if not path.is_file():
+            continue
+        entries.append(Entry(path, stat.st_size, stat.st_mtime, kind))
+    return entries
+
+
 def _skip_dir(name: str) -> bool:
     """True for hidden and well-known noise directories."""
     return name.startswith(".") or name.lower() in SKIP_DIRS

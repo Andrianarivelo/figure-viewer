@@ -1,0 +1,12 @@
+{
+  "fixture_sizes": [
+    100,
+    1000,
+    5000
+  ],
+  "repeats": 15,
+  "warmups": 3,
+  "alpha": 0.05,
+  "comparison": "3.2 top-level folder scan versus 3.3 one-file metadata load",
+  "integrity": "Generated temporary metadata fixtures only; no user media read or changed."
+}

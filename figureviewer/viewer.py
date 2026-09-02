@@ -1,8 +1,9 @@
 """The FigView window.
 
-One :class:`ViewerWindow` owns one folder. Several windows can be open at the
-same time (File > New Window) and they share the worker pool, the document
-cache and the settings file through the parent :class:`~figureviewer.app.App`.
+One :class:`ViewerWindow` owns either an explicit document list or one
+explicitly selected folder. Several windows can be open at the same time
+(File > New Window) and they share the worker pool, document cache, and
+settings file through the parent :class:`~figureviewer.app.App`.
 
 The rendering model
 -------------------
@@ -144,13 +145,19 @@ class ViewerWindow(tk.Toplevel):
     """A single browsing window: sidebar, canvas, toolbar, status bar."""
 
     # ------------------------------------------------------------------ setup
-    def __init__(self, app, folder: Path, select: Optional[Path] = None) -> None:
+    def __init__(self, app, folder: Path, select: Optional[Path] = None,
+                 *, explicit_paths: Optional[list[Path]] = None) -> None:
         super().__init__(app.root)
         self.app = app
         self.palette: Palette = app.palette
         self.icons = IconFactory(self, self.palette, app.scale)
         self.folder = folder
         self.pending_select = select
+        # None means an explicitly opened folder. A list means document mode,
+        # including an empty new window. Opening more files appends here and
+        # never imports their siblings.
+        self.explicit_paths = (None if explicit_paths is None else
+                               list(dict.fromkeys(Path(p) for p in explicit_paths)))
 
         self.entries: list[D.Entry] = []
         self.filtered: list[D.Entry] = []
@@ -214,7 +221,8 @@ class ViewerWindow(tk.Toplevel):
 
         settings = app.settings
         self.search_var = tk.StringVar()
-        self.folder_var = tk.StringVar(value=str(folder))
+        self.folder_var = tk.StringVar(
+            value=str(folder) if self.explicit_paths is None else "")
         self.status_var = tk.StringVar(value="Ready")
         self.zoom_var = tk.StringVar(value="100%")
         self.page_var = tk.StringVar(value="")
@@ -258,7 +266,7 @@ class ViewerWindow(tk.Toplevel):
             min(VIDEO_FRAME_STEP_MAX, int(settings.get("video_frame_step", 10))),
         ))
 
-        self.title(f"{APP_NAME} - {folder}")
+        self._update_window_title()
         self._apply_icon()
         self.geometry(app.next_geometry())
         self.minsize(880, 560)
@@ -337,12 +345,23 @@ class ViewerWindow(tk.Toplevel):
                        image=self.icons.get("up")).pack(side="left", padx=(3, 0))
 
         entry = ttk.Entry(bar, textvariable=self.folder_var)
-        entry.grid(row=0, column=2, sticky="ew", padx=(0, 8))
+        entry.grid(row=0, column=2, sticky="ew")
         entry.bind("<Return>", lambda _e: self.open_typed_folder())
         self.folder_entry = entry
 
+        # A deliberately quiet affordance. It clears the active directory and
+        # leaves folder mode, rather than merely deleting text that would be
+        # restored by the next refresh.
+        self.clear_folder_button = ttk.Button(
+            bar, text="×", width=2, style="Icon.TButton", takefocus=False,
+            command=self.clear_folder_path)
+        self.clear_folder_button.grid(row=0, column=3, padx=(2, 8))
+        bind_tooltip(self.clear_folder_button, "Clear folder path", p)
+        if self.explicit_paths is not None:
+            self.clear_folder_button.state(["disabled"])
+
         segment = ttk.Frame(bar, style="Card.TFrame", padding=1)
-        segment.grid(row=0, column=3)
+        segment.grid(row=0, column=4)
         for label, value, tip in (("Images", D.FILTER_IMAGES, "Show images only  (Ctrl+1)"),
                                   ("PDF", D.FILTER_DOCS, "Show PDF and vector documents  (Ctrl+2)"),
                                   ("Video", D.FILTER_VIDEOS, "Show videos only  (Ctrl+3)"),
@@ -354,7 +373,7 @@ class ViewerWindow(tk.Toplevel):
             bind_tooltip(radio, tip, p)
 
         actionbar = ttk.Frame(bar, style="Toolbar.TFrame")
-        actionbar.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(6, 0))
+        actionbar.grid(row=1, column=0, columnspan=5, sticky="ew", pady=(6, 0))
 
         zoom = ttk.Frame(actionbar, style="ToolbarGroup.TFrame", padding=2)
         zoom.pack(side="left", padx=(0, 8))
@@ -644,13 +663,16 @@ class ViewerWindow(tk.Toplevel):
         file_menu = self.menubar.add_menu("File", underline=0)
         file_menu.add_command(label="New Window", accelerator="Ctrl+N", command=self.app.new_window)
         file_menu.add_command(label="Duplicate Window", accelerator="Ctrl+Shift+N",
-                              command=lambda: self.app.new_window(self.folder, self.current.path if self.current else None))
+                              command=self.duplicate_window)
         file_menu.add_separator()
         file_menu.add_command(label="Open Folder…", accelerator="Ctrl+O", command=self.choose_folder)
         file_menu.add_command(label="Open File…", accelerator="Ctrl+Shift+O", command=self.choose_file)
-        self.recent_menu = tk.Menu(file_menu)
-        style_menu(self.recent_menu, p)
-        file_menu.add_cascade(label="Recent Folders", menu=self.recent_menu)
+        self.recent_files_menu = tk.Menu(file_menu)
+        self.recent_folders_menu = tk.Menu(file_menu)
+        style_menu(self.recent_files_menu, p)
+        style_menu(self.recent_folders_menu, p)
+        file_menu.add_cascade(label="Recent Files", menu=self.recent_files_menu)
+        file_menu.add_cascade(label="Recent Folders", menu=self.recent_folders_menu)
         file_menu.add_command(label="Parent Folder", accelerator="Backspace", command=self.go_parent)
         file_menu.add_separator()
         file_menu.add_command(label="Save Page / Frame As…", accelerator="Ctrl+S",
@@ -788,20 +810,27 @@ class ViewerWindow(tk.Toplevel):
         return self._flip_v_var
 
     def _refresh_recent_menu(self) -> None:
-        """Rebuild the Recent Folders cascade from the shared settings."""
-        self.recent_menu.delete(0, "end")
-        recents = self.app.settings.get("recent", [])
-        if not recents:
-            self.recent_menu.add_command(label="(empty)", state="disabled")
-            return
-        for path in recents[:12]:
-            self.recent_menu.add_command(
-                label=path, command=lambda p=path: self.set_folder(Path(p)))
-        self.recent_menu.add_separator()
-        self.recent_menu.add_command(label="Clear List", command=self._clear_recent)
+        """Rebuild the independent recent-file and recent-folder cascades."""
+        menus = (
+            (self.recent_files_menu, "recent_files", self.add_file),
+            (self.recent_folders_menu, "recent_folders", self.set_folder),
+        )
+        for menu, key, command in menus:
+            menu.delete(0, "end")
+            recents = self.app.settings.get(key, [])
+            existing = [path for path in recents if Path(path).exists()]
+            if not existing:
+                menu.add_command(label="(empty)", state="disabled")
+                continue
+            for path in existing[:12]:
+                menu.add_command(label=path,
+                                 command=lambda p=path, fn=command: fn(Path(p)))
+            menu.add_separator()
+            menu.add_command(label="Clear List",
+                             command=lambda setting=key: self._clear_recent(setting))
 
-    def _clear_recent(self) -> None:
-        self.app.settings["recent"] = []
+    def _clear_recent(self, key: str) -> None:
+        self.app.settings[key] = []
         self.app.broadcast_recent()
 
     # ------------------------------------------------------------- bindings
@@ -822,8 +851,7 @@ class ViewerWindow(tk.Toplevel):
             return handler
 
         bind("<Control-n>", lambda e: self.app.new_window())
-        bind("<Control-N>", lambda e: self.app.new_window(self.folder,
-                                                          self.current.path if self.current else None))
+        bind("<Control-N>", lambda e: self.duplicate_window())
         bind("<Control-o>", lambda e: self.choose_folder())
         bind("<Control-O>", lambda e: self.choose_file())
         bind("<Control-w>", lambda e: self.close())
@@ -936,39 +964,96 @@ class ViewerWindow(tk.Toplevel):
         patterns = " ".join(
             f"*{s}" for s in sorted(D.RASTER_SUFFIXES | D.VECTOR_SUFFIXES | D.VIDEO_SUFFIXES)
         )
-        chosen = filedialog.askopenfilename(
-            parent=self, initialdir=str(self.folder), title="Open a file",
+        chosen = filedialog.askopenfilenames(
+            parent=self, initialdir=str(self.folder), title="Open files",
             filetypes=[("Supported files", patterns), ("All files", "*.*")])
         if chosen:
-            path = Path(chosen)
-            self.set_folder(path.parent, select=path)
+            self.add_files([Path(path) for path in chosen])
 
     def open_typed_folder(self) -> None:
         raw = self.folder_var.get().strip().strip('"')
         if not raw:
+            self.clear_folder_path()
             return
         path = Path(raw).expanduser()
         if path.is_file():
-            self.set_folder(path.parent, select=path)
+            self.add_file(path)
         else:
             self.set_folder(path)
 
-    def reveal_path(self, target: Path) -> None:
-        """Show ``target`` in this window, reusing the current listing if it can.
+    def duplicate_window(self) -> None:
+        """Clone this window without changing folder-versus-document mode."""
+        self.app.new_window(
+            self.folder,
+            self.current.path if self.current else None,
+            explicit_paths=(list(self.explicit_paths)
+                            if self.explicit_paths is not None else None),
+        )
 
-        Called when a second launch hands a file over (see
-        :class:`figureviewer.app.InstanceServer`). Staying in the current folder
-        matters: if the user is browsing ``exp/`` three levels deep and opens
-        ``exp/run7/figures/psth.png`` from Explorer, jumping the window to
-        ``figures/`` would throw away the listing they were working in.
-        """
+    def add_file(self, path: Path) -> None:
+        """Append one explicitly opened file and select it."""
+        self.add_files([path])
+
+    def add_files(self, paths: list[Path]) -> None:
+        """Append supported files without scanning any parent directory."""
+        resolved: list[Path] = []
+        for raw in paths:
+            try:
+                path = raw.expanduser().resolve()
+            except OSError:
+                path = raw
+            if path.is_file() and D.suffix_kind(path.suffix) is not None:
+                resolved.append(path)
+        if not resolved:
+            return
+
+        # Leaving a folder view keeps the document being viewed, not every
+        # sibling that happened to be present in the directory listing.
+        if self.explicit_paths is None:
+            self.explicit_paths = [self.current.path] if self.current else []
+            self.folder_var.set("")
+            self.clear_folder_button.state(["disabled"])
+        known = {os.path.normcase(str(path)) for path in self.explicit_paths}
+        for path in resolved:
+            identity = os.path.normcase(str(path))
+            if identity not in known:
+                self.explicit_paths.append(path)
+                known.add(identity)
+            self.app.push_recent_file(path)
+        target = resolved[-1]
+        self.folder = target.parent
+        kind = D.suffix_kind(target.suffix)
+        if kind is not None and kind not in D.kinds_for_filter(self.kind_filter.get()):
+            self.kind_filter.set(D.FILTER_ALL)
+        self.pending_select = target
+        self.rescan(keep_selection=False)
+
+    def clear_folder_path(self) -> None:
+        """Leave folder mode and reset the active listing to an empty session."""
+        self._list_seq += 1
+        self.explicit_paths = []
+        self.folder_var.set("")
+        self.clear_folder_button.state(["disabled"])
+        self._stop_video_session()
+        self.current = None
+        self.document = None
+        self.page = 0
+        self.pending_select = None
+        self.entries = []
+        self.canvas.delete("all")
+        self._update_window_title()
+        self._apply_filter()
+        self.folder_entry.focus_set()
+
+    def reveal_path(self, target: Path) -> None:
+        """Open an explicit file or switch to an explicitly requested folder."""
         try:
             target = target.expanduser().resolve()
         except Exception:
             pass
 
         if target.is_dir():
-            if target != self.folder:
+            if self.explicit_paths is not None or target != self.folder:
                 self.set_folder(target)
             else:
                 # Same folder handed over again: still refresh, so a launch
@@ -976,31 +1061,13 @@ class ViewerWindow(tk.Toplevel):
                 self.rescan()
             return
 
-        # A PDF opened while the toolbar says "Images" would land in an empty
-        # list; widen the filter rather than showing nothing.
-        kind = D.suffix_kind(target.suffix)
-        if kind is not None and kind not in D.kinds_for_filter(self.kind_filter.get()):
-            self.kind_filter.set(D.FILTER_ALL)
-
-        if self._covers(target):
-            self.pending_select = target
-            self.rescan(keep_selection=False)
-        else:
-            self.set_folder(target.parent, target)
-
-    def _covers(self, target: Path) -> bool:
-        """True if the current folder and scan depth already list ``target``."""
-        try:
-            relative = target.relative_to(self.folder)
-        except ValueError:
-            return False
-        depth = self.scan_depth.get()
-        levels = len(relative.parts) - 1
-        return depth < 0 or levels <= depth
+        self.add_file(target)
 
     def go_parent(self) -> None:
-        parent = self.folder.parent
-        if parent != self.folder:
+        base = (self.current.path.parent
+                if self.explicit_paths is not None and self.current else self.folder)
+        parent = base.parent
+        if parent != base:
             self.set_folder(parent)
 
     def set_folder(self, folder: Path, select: Optional[Path] = None) -> None:
@@ -1011,18 +1078,20 @@ class ViewerWindow(tk.Toplevel):
             pass
         if not folder.is_dir():
             messagebox.showerror("Folder not found", str(folder), parent=self)
-            self.folder_var.set(str(self.folder))
+            self.folder_var.set(str(self.folder) if self.explicit_paths is None else "")
             return
         self.folder = folder
+        self.explicit_paths = None
         self.folder_var.set(str(folder))
-        self.title(f"{APP_NAME} - {folder}")
+        self.clear_folder_button.state(["!disabled"])
+        self._update_window_title()
         self._stop_video_session()
         self.current = None
         self.document = None
         self.page = 0
         self.pending_select = select
         self.canvas.delete("all")
-        self.app.push_recent(folder)
+        self.app.push_recent_folder(folder)
         self.rescan()
 
     # ------------------------------------------------------------- scanning
@@ -1034,6 +1103,8 @@ class ViewerWindow(tk.Toplevel):
         sequence = self._list_seq
         self._rescan_pending += 1
         folder = self.folder
+        explicit_paths = (None if self.explicit_paths is None else
+                          tuple(self.explicit_paths))
         kinds = D.kinds_for_filter(self.kind_filter.get())
         depth = self.scan_depth.get()
         sort_by = self.sort_by.get()
@@ -1041,13 +1112,20 @@ class ViewerWindow(tk.Toplevel):
         keep = self.current.path if (keep_selection and self.current) else self.pending_select
 
         def job():
+            if explicit_paths is not None:
+                return D.entries_for_paths(list(explicit_paths), kinds=kinds), False
             return D.scan_folder(folder, kinds=kinds, max_depth=depth,
                                  sort_by=sort_by, descending=descending)
 
         def done(result):
             entries, truncated = result
             self._rescan_pending = max(0, self._rescan_pending - 1)
-            if self._destroyed or folder != self.folder or sequence < self._list_applied:
+            current_paths = (None if self.explicit_paths is None else
+                             tuple(self.explicit_paths))
+            if (self._destroyed
+                    or (explicit_paths is None and folder != self.folder)
+                    or explicit_paths != current_paths
+                    or sequence < self._list_applied):
                 return
             self._list_applied = sequence
             self.entries = entries
@@ -1095,7 +1173,8 @@ class ViewerWindow(tk.Toplevel):
         # date or size is asked for precisely to see the newest files *across*
         # folders, so grouping them back up would undo the sort; those modes get
         # a flat list with the relative path on each row instead.
-        grouped = (self.scan_depth.get() != 0
+        grouped = (self.explicit_paths is None
+                   and self.scan_depth.get() != 0
                    and self.sort_by.get() in ("name", "kind")
                    and any(entry.depth for entry in self.filtered))
 
@@ -1138,7 +1217,11 @@ class ViewerWindow(tk.Toplevel):
             self.document = None
             self.canvas.delete("all")
             self._draw_empty()
-            self.status_var.set(f"No matching files in {self.folder}")
+            self.status_var.set(
+                f"No matching files in {self.folder}"
+                if self.explicit_paths is None else
+                ("No opened files match the current filter"
+                 if self.explicit_paths else "No files open"))
             self.page_var.set("")
             self.zoom_var.set("")
             return
@@ -1187,7 +1270,7 @@ class ViewerWindow(tk.Toplevel):
             if videos:
                 parts.append(f"{videos} vid")
             count = " · ".join(parts) if parts else str(total)
-            if self.scan_depth.get() != 0:
+            if self.explicit_paths is None and self.scan_depth.get() != 0:
                 folders = len({e.subfolder for e in self.filtered})
                 if folders > 1:
                     count += f" · {folders} dirs"
@@ -1337,6 +1420,7 @@ class ViewerWindow(tk.Toplevel):
     def load(self, entry: D.Entry, *, keep_view: bool = False, note: str = "Loaded") -> None:
         """Load a still document asynchronously or start a video stream."""
         self.current = entry
+        self._update_window_title()
         if entry.kind == D.KIND_VIDEO:
             self._load_video(entry, keep_view=keep_view, note=note)
             return
@@ -1816,8 +1900,13 @@ class ViewerWindow(tk.Toplevel):
         self._draw_minimap()
 
     def _draw_empty(self) -> None:
-        message = ("Drop a folder path in the bar above, or press Ctrl+O."
-                   if self.entries else f"Nothing to show in\n{self.folder}")
+        if self.explicit_paths is None:
+            message = ("No files match the current filter."
+                       if self.entries else f"Nothing to show in\n{self.folder}")
+        elif self.explicit_paths:
+            message = "No opened files match the current filter."
+        else:
+            message = "Open a file (Ctrl+Shift+O) or choose a folder (Ctrl+O)."
         self._draw_message(message)
 
     def _draw_message(self, message: str) -> None:
@@ -2207,7 +2296,8 @@ class ViewerWindow(tk.Toplevel):
         self.toast("Path copied")
 
     def copy_folder_path(self) -> None:
-        winclip.copy_text(str(self.folder))
+        folder = self.current.path.parent if self.current else self.folder
+        winclip.copy_text(str(folder))
         self.toast("Folder path copied")
 
     def copy_file_object(self) -> None:
@@ -2332,7 +2422,7 @@ class ViewerWindow(tk.Toplevel):
     def reveal_in_explorer(self) -> None:
         if self.current:
             _reveal_in_explorer(self.current.path)
-        else:
+        elif self.explicit_paths is None:
             _open_in_shell(self.folder)
 
     def delete_current(self) -> None:
@@ -2351,6 +2441,8 @@ class ViewerWindow(tk.Toplevel):
             messagebox.showerror("Could not delete", f"{path}\n\n{exc}", parent=self)
             return
         index = self._index()
+        if self.explicit_paths is not None:
+            self.explicit_paths = [item for item in self.explicit_paths if item != path]
         self.current = None
         self.rescan(keep_selection=False)
         self.after(200, lambda: self.select_index(min(index, len(self.filtered) - 1)))
@@ -2632,6 +2724,8 @@ class ViewerWindow(tk.Toplevel):
         # nothing to refresh.
         if self._rescan_pending == 0 and not self._watch_inflight and self.winfo_viewable():
             folder = self.folder
+            explicit_paths = (None if self.explicit_paths is None else
+                              tuple(self.explicit_paths))
             kinds = D.kinds_for_filter(self.kind_filter.get())
             depth = self.scan_depth.get()
             sort_by = self.sort_by.get()
@@ -2641,6 +2735,8 @@ class ViewerWindow(tk.Toplevel):
             self._watch_inflight = True
 
             def job():
+                if explicit_paths is not None:
+                    return D.entries_for_paths(list(explicit_paths), kinds=kinds), False
                 return D.scan_folder(folder, kinds=kinds, max_depth=depth,
                                      sort_by=sort_by, descending=descending)
 
@@ -2648,7 +2744,12 @@ class ViewerWindow(tk.Toplevel):
                 entries, truncated = result
                 self._scan_truncated = truncated
                 self._watch_inflight = False
-                if self._destroyed or folder != self.folder or sequence < self._list_applied:
+                current_paths = (None if self.explicit_paths is None else
+                                 tuple(self.explicit_paths))
+                if (self._destroyed
+                        or (explicit_paths is None and folder != self.folder)
+                        or explicit_paths != current_paths
+                        or sequence < self._list_applied):
                     return
                 self._list_applied = sequence
                 if [e.path for e in entries] != [e.path for e in self.entries]:
@@ -2675,6 +2776,18 @@ class ViewerWindow(tk.Toplevel):
 
             self.app.worker.submit(job, done, failed)
         self._watch_job = self.after(WATCH_MS, self._watch)
+
+    def _update_window_title(self) -> None:
+        """Reflect the active source without pretending a file list is a folder."""
+        if self.explicit_paths is None:
+            suffix = str(self.folder)
+        elif self.current is not None:
+            suffix = self.current.name
+        elif self.explicit_paths:
+            suffix = Path(self.explicit_paths[-1]).name
+        else:
+            suffix = "No files open"
+        self.title(f"{APP_NAME} - {suffix}")
 
     # ------------------------------------------------------------ read-outs
     def _update_readouts(self) -> None:
@@ -2800,8 +2913,10 @@ class ViewerWindow(tk.Toplevel):
         style_menu(menu, self.palette)
         menu.add_command(label="Open in Default App", command=self.open_default_app)
         menu.add_command(label="Open in New Window",
-                         command=lambda: self.app.new_window(self.folder,
-                                                             self.current.path if self.current else None))
+                         command=lambda: self.app.new_window(
+                             self.current.path.parent if self.current else self.folder,
+                             self.current.path if self.current else None,
+                             explicit_paths=[self.current.path] if self.current else []))
         menu.add_command(label="Reveal in Explorer", command=self.reveal_in_explorer)
         menu.add_separator()
         menu.add_command(label="Copy Image / Video Frame", command=self.copy_image)
@@ -2912,7 +3027,8 @@ class ViewerWindow(tk.Toplevel):
                     pass
         try:
             self.app.settings["geometry"] = self.geometry()
-            self.app.settings["last_folder"] = str(self.folder)
+            if self.explicit_paths is None:
+                self.app.settings["last_folder"] = str(self.folder)
         except Exception:
             pass
         self.app.forget_window(self)

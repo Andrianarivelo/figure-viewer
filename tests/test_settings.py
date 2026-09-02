@@ -37,6 +37,17 @@ class SettingsMigrationTests(unittest.TestCase):
         })
         self.assertEqual(settings["scan_depth"], 0)
 
+    def test_schema_two_depth_and_recent_folders_migrate_independently(self) -> None:
+        settings = self._load({
+            "settings_schema": 2,
+            "scan_depth": 0,
+            "recent": [r"C:\figures", r"D:\exports"],
+        })
+        self.assertEqual(settings["scan_depth"], 0)
+        self.assertEqual(settings["recent_folders"], [r"C:\figures", r"D:\exports"])
+        self.assertEqual(settings["recent_files"], [])
+        self.assertNotIn("recent", settings)
+
     def test_invalid_frame_jump_returns_to_safe_default(self) -> None:
         settings = self._load({
             "settings_schema": "invalid",

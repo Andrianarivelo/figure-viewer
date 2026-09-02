@@ -9,6 +9,25 @@ from figureviewer import docs as D
 
 
 class MediaClassificationTests(unittest.TestCase):
+    def test_explicit_entries_preserve_order_and_never_scan_siblings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first.png"
+            sibling = root / "not-opened.png"
+            second = root / "second.pdf"
+            for path in (first, sibling, second):
+                path.write_bytes(b"metadata-only test")
+
+            entries = D.entries_for_paths(
+                [first, second, first],
+                kinds={D.KIND_IMAGE, D.KIND_DOC, D.KIND_VIDEO},
+            )
+
+            self.assertEqual(
+                [entry.path for entry in entries], [first.resolve(), second.resolve()]
+            )
+            self.assertNotIn(sibling.resolve(), {entry.path for entry in entries})
+
     def test_video_suffixes_have_their_own_kind(self) -> None:
         for suffix in (".mp4", ".MOV", ".mkv", ".webm", ".m2ts"):
             self.assertEqual(D.suffix_kind(suffix), D.KIND_VIDEO)

@@ -65,6 +65,10 @@ class ViewerWindowVideoTests(unittest.TestCase):
                     self.assertIsNotNone(window._video_photo)
                     self.assertIsNotNone(window._video_session)
                     self.assertEqual(window.current.kind, D.KIND_VIDEO)
+                    self.assertEqual([entry.path for entry in window.entries], [video_path])
+                    self.assertEqual(window.folder_var.get(), "")
+                    self.assertTrue(window.clear_folder_button.instate(["disabled"]))
+                    self.assertEqual(application.settings["recent_files"][0], str(video_path))
                     self.assertTrue(window.video_controls.winfo_ismapped())
                     self.assertIn(window._video_session.snapshot().state,
                                   {"playing", "paused", "ended"})
@@ -126,8 +130,17 @@ class ViewerWindowVideoTests(unittest.TestCase):
                     self.assertFalse(old_session._thread.is_alive())
                     self.assertIsNotNone(window._video_photo)
 
-                    image_entry = next(entry for entry in window.entries
-                                       if entry.path == image_path)
+                    window.add_file(image_path)
+                    deadline = time.perf_counter() + 2.0
+                    while (time.perf_counter() < deadline
+                           and image_path not in {entry.path for entry in window.entries}):
+                        application.root.update()
+                        time.sleep(0.005)
+                    self.assertEqual(
+                        [entry.path for entry in window.entries], [video_path, image_path]
+                    )
+                    self.assertEqual(application.settings["recent_files"][0], str(image_path))
+                    image_entry = next(entry for entry in window.entries if entry.path == image_path)
                     window.load(image_entry)
                     deadline = time.perf_counter() + 3.0
                     while time.perf_counter() < deadline and window.document is None:
@@ -136,6 +149,31 @@ class ViewerWindowVideoTests(unittest.TestCase):
                     self.assertIsNotNone(window.document)
                     self.assertIsNone(window._video_session)
                     self.assertFalse(window.video_controls.winfo_ismapped())
+
+                    # A folder is scanned only after an explicit folder action,
+                    # and the small reset control genuinely exits that mode.
+                    window.set_folder(root)
+                    deadline = time.perf_counter() + 2.0
+                    while time.perf_counter() < deadline and window.explicit_paths is not None:
+                        application.root.update()
+                        time.sleep(0.005)
+                    deadline = time.perf_counter() + 2.0
+                    while time.perf_counter() < deadline and len(window.entries) < 2:
+                        application.root.update()
+                        time.sleep(0.005)
+                    self.assertIsNone(window.explicit_paths)
+                    self.assertEqual(window.folder_var.get(), str(root))
+                    self.assertFalse(window.clear_folder_button.instate(["disabled"]))
+                    self.assertEqual({entry.path for entry in window.entries},
+                                     {video_path, image_path})
+                    self.assertEqual(application.settings["recent_folders"][0], str(root))
+
+                    window.clear_folder_path()
+                    application.root.update()
+                    self.assertEqual(window.explicit_paths, [])
+                    self.assertEqual(window.folder_var.get(), "")
+                    self.assertEqual(window.entries, [])
+                    self.assertTrue(window.clear_folder_button.instate(["disabled"]))
                 finally:
                     application.quit_all()
 

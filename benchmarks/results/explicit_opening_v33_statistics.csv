@@ -1,0 +1,4 @@
+fixture_files,paired_repeats,shapiro_difference_p,normal_difference_at_alpha,test,wilcoxon_statistic,p_value,alpha
+100,15,2.3401029419476046e-05,False,one-sided paired Wilcoxon,120.0,3.0517578125e-05,0.05
+1000,15,5.000747181640221e-06,False,one-sided paired Wilcoxon,120.0,3.0517578125e-05,0.05
+5000,15,0.0486341440615367,False,one-sided paired Wilcoxon,120.0,3.0517578125e-05,0.05

@@ -1,9 +1,9 @@
-# FigView 3.2
+# FigView 3.3
 
-A fast, themed, folder-based viewer for **images, videos, and PDFs** on Windows.
-Point it at a folder, keep it open, and let your analysis scripts overwrite the
-files underneath: the viewer reloads them automatically without losing your
-zoom, your pan, your playback position, or your place in the list.
+A fast, themed viewer for **images, videos, and PDFs** on Windows. Open one file
+and only that file enters the list; open more files and they append to the same
+session. Folder scanning starts only when you explicitly choose or pass a
+folder. Auto reload preserves zoom, pan, playback position, and list position.
 
 ---
 
@@ -71,6 +71,10 @@ its path to the window that is already open instead of starting another Python
 process, so clicking through ten PNGs fills one window rather than ten. Turn it
 off with `"single_instance": false` in the settings file.
 
+The **File** menu keeps separate Recent Files and Recent Folders lists. The
+small `×` beside the folder path leaves folder mode and clears the active list;
+it does not erase either recent-items history.
+
 ### Requirements
 
 | Package | Needed for | Install |
@@ -85,6 +89,29 @@ for that media type without preventing the rest of the app from starting.
 OpenCV provides efficient in-app video decoding but does not output audio. The
 transport and details panel state this explicitly. For a clip whose soundtrack
 matters, use **Open in Default App**.
+
+---
+
+## What is new in 3.3
+
+**Explicit document sessions.** Opening a file no longer scans its parent
+directory. A single launch shows a single file, and later file opens append in
+opening order. This applies equally to the file dialog, command-line launches,
+Windows file associations, single-instance handoffs, and Recent Files.
+
+**Folders remain deliberate.** Only Open Folder, a typed directory, a recent
+folder, a directory command-line target, or explicit parent navigation starts
+a folder scan. Recent files and folders are now independent, and a compact
+clear control resets the active folder path.
+
+On generated directories containing 100, 1,000, and 5,000 supported siblings,
+the new one-file path admitted exactly one file and took 0.15, 0.28, and 0.35 ms
+median, versus 2.18, 17.36, and 96.28 ms for the previous folder scan. All
+paired comparisons used a one-sided Wilcoxon test after non-normal difference
+checks and gave `p = 0.000031` (15 pairs per size). See the
+[validation figure](benchmarks/results/explicit_opening_v33.png),
+[statistics](benchmarks/results/explicit_opening_v33_statistics.csv), and
+[reproducible benchmark](benchmarks/benchmark_v33.py).
 
 ---
 

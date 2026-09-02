@@ -38,11 +38,10 @@ APP_DIR = Path(__file__).resolve().parent.parent
 SETTINGS_DIR = Path.home() / "AppData" / "Roaming" / "FigureViewerApp"
 SETTINGS_PATH = SETTINGS_DIR / "settings.json"
 
-# Settings schema 2 changes folder discovery from top-level-only to all levels
-# by default. The old default was indistinguishable from an explicit choice,
-# so existing schema-1 profiles are migrated once and every later user choice
-# is preserved normally.
-SETTINGS_SCHEMA_VERSION = 2
+# Schema 2 changed folder discovery to all levels. Schema 3 separates recent
+# files from recent folders. Each migration is bounded to its source schema so
+# later explicit user choices remain untouched.
+SETTINGS_SCHEMA_VERSION = 3
 
 #: Where a running instance advertises the loopback port it listens on, so that
 #: a second launch (a double-clicked PNG, say) can hand its file over instead of
@@ -54,7 +53,8 @@ DEFAULT_SETTINGS: dict = {
     "theme": "dark",
     "geometry": "1560x960+70+50",
     "last_folder": "",
-    "recent": [],
+    "recent_files": [],
+    "recent_folders": [],
     "filter": D.FILTER_ALL,
     "sort_by": "name",
     "sort_desc": False,
@@ -117,13 +117,20 @@ def load_settings() -> dict:
         stored_schema = int(stored.get("settings_schema", 1) or 1)
     except (TypeError, ValueError):
         stored_schema = 1
-    if stored_schema < SETTINGS_SCHEMA_VERSION:
+    if stored_schema < 2:
         try:
             stored_depth = int(stored.get("scan_depth", 0))
         except (TypeError, ValueError):
             stored_depth = 0
         if stored_depth == 0:
             values["scan_depth"] = D.DEPTH_UNLIMITED
+    # Schema 2 had one folder-only list named ``recent``. Preserve it under
+    # the clearer split introduced for Adobe-style explicit file collections.
+    if "recent_folders" not in stored and isinstance(stored.get("recent"), list):
+        values["recent_folders"] = stored["recent"]
+    for key in ("recent_files", "recent_folders"):
+        if not isinstance(values.get(key), list):
+            values[key] = []
     values["settings_schema"] = SETTINGS_SCHEMA_VERSION
     try:
         depth = int(values["scan_depth"])
@@ -135,6 +142,7 @@ def load_settings() -> dict:
     except (KeyError, TypeError, ValueError):
         values["video_frame_step"] = DEFAULT_SETTINGS["video_frame_step"]
     values.pop("recursive", None)
+    values.pop("recent", None)
     return values
 
 
@@ -274,8 +282,16 @@ class App:
         self.windows: list = []
         self._cascade = 0
 
+        # A remembered directory is only a dialog starting point. It must not
+        # silently become an active folder listing: folders open only after an
+        # explicit directory target or an Open Folder action.
         start = folder or self._initial_folder()
-        self.new_window(start, select)
+        if select is not None:
+            self.new_window(start, select, explicit_paths=[select])
+        elif folder is not None:
+            self.new_window(start)
+        else:
+            self.new_window(start, explicit_paths=[])
 
         self.instance: Optional[InstanceServer] = None
         if self.settings.get("single_instance", True):
@@ -313,33 +329,41 @@ class App:
             return base
 
     # ------------------------------------------------------------- windows
-    def new_window(self, folder: Optional[Path] = None, select: Optional[Path] = None):
+    def new_window(self, folder: Optional[Path] = None, select: Optional[Path] = None,
+                   *, explicit_paths: Optional[list[Path]] = None):
         """Open another viewer window (File > New Window)."""
         from .viewer import ViewerWindow
 
         if folder is None:
-            folder = self.windows[-1].folder if self.windows else self._initial_folder()
-        window = ViewerWindow(self, Path(folder), select)
+            folder = self._initial_folder()
+            if explicit_paths is None and select is None:
+                explicit_paths = []
+        window = ViewerWindow(self, Path(folder), select, explicit_paths=explicit_paths)
         self.windows.append(window)
-        self.push_recent(Path(folder))
+        if explicit_paths is None:
+            self.push_recent_folder(Path(folder))
+        for path in explicit_paths or []:
+            self.push_recent_file(path)
         return window
 
     def open_paths(self, paths: list[Path]) -> None:
         """Show files or folders handed over by a second launch.
 
-        The first target reuses the most recently opened window; any further
-        ones get windows of their own, which is what someone selecting five
-        figures in Explorer and pressing Enter expects.
+        Files append to the most recently used window's explicit list. A
+        directory remains an explicit request to switch that window to folder
+        mode. This mirrors document readers: opening another document adds it
+        to the session instead of importing every sibling from disk.
         """
-        for index, raw in enumerate(paths):
+        window = self.windows[-1] if self.windows else None
+        for raw in paths:
             folder, select = resolve_target(str(raw))
             if folder is None:
                 continue
-            if index == 0 and self.windows:
-                window = self.windows[-1]
-                window.reveal_path(select or folder)
+            if window is None:
+                window = self.new_window(
+                    folder, select, explicit_paths=[select] if select else None)
             else:
-                window = self.new_window(folder, select)
+                window.reveal_path(select or folder)
             self.focus_window(window)
 
     def focus_window(self, window) -> None:
@@ -400,14 +424,24 @@ class App:
             pass
 
     # -------------------------------------------------------------- shared
-    def push_recent(self, folder: Path) -> None:
-        """Move a folder to the top of the recent list."""
-        text = str(folder)
-        recent = [item for item in self.settings.get("recent", []) if item != text]
+    def _push_recent(self, key: str, path: Path) -> None:
+        """Move a path to the top of one bounded recent-items list."""
+        try:
+            path = path.expanduser().resolve()
+        except OSError:
+            pass
+        text = str(path)
+        recent = [item for item in self.settings.get(key, []) if item != text]
         recent.insert(0, text)
-        self.settings["recent"] = recent[:15]
-        self.settings["last_folder"] = text
+        self.settings[key] = recent[:15]
         self.broadcast_recent()
+
+    def push_recent_file(self, path: Path) -> None:
+        self._push_recent("recent_files", path)
+
+    def push_recent_folder(self, folder: Path) -> None:
+        self._push_recent("recent_folders", folder)
+        self.settings["last_folder"] = str(folder)
 
     def broadcast_recent(self) -> None:
         for window in self.windows:
@@ -426,7 +460,9 @@ class App:
         name = "light" if self.palette.name == "dark" else "dark"
         self.palette = PALETTES[name]
         self.settings["theme"] = name
-        state = [(w.folder, w.current.path if w.current else None, w.geometry())
+        state = [(w.folder, w.current.path if w.current else None,
+                  list(w.explicit_paths) if w.explicit_paths is not None else None,
+                  w.geometry())
                  for w in list(self.windows)]
         for window in list(self.windows):
             window._destroyed = True
@@ -442,8 +478,8 @@ class App:
         apply_theme(self.root, self.palette)
         self._apply_row_height()
         self._cascade = 0
-        for folder, selected, geometry in state:
-            window = self.new_window(folder, selected)
+        for folder, selected, explicit_paths, geometry in state:
+            window = self.new_window(folder, selected, explicit_paths=explicit_paths)
             try:
                 window.geometry(geometry)
             except Exception:

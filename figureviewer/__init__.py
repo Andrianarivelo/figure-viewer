@@ -7,15 +7,15 @@ Package layout
 ``docs``     : file scanning, still-document abstraction, caches and thumbnails.
 ``video``    : bounded, threaded OpenCV playback for local video files.
 ``icons``    : DPI-aware native control icons and generated-brand loading.
-``viewer``   : the viewer window (one per open folder) with its canvas, view
-               transform, snipping tool and all commands.
+``viewer``   : the viewer window (explicit files or one folder) with its canvas,
+               view transform, snipping tool and all commands.
 ``app``      : root application object, settings persistence, window registry.
 """
 
 __all__ = ["APP_NAME", "APP_VERSION", "VIDEO_SUFFIXES"]
 
 APP_NAME = "FigView"
-APP_VERSION = "3.2"
+APP_VERSION = "3.3"
 
 # Shared by scanning and playback. Keeping this tiny table in the package root
 # avoids an additional filesystem import on the image/PDF startup path.
