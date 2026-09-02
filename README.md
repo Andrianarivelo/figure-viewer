@@ -1,9 +1,16 @@
-# FigView 3.4
+# FigView 3.5
 
-A fast, themed viewer for **images, videos, and PDFs** on Windows. Open one file
-and only that file enters the list; open more files and they append to the same
-session. Folder scanning starts only when you explicitly choose or pass a
-folder. Auto reload preserves zoom, pan, playback position, and list position.
+A fast, themed viewer **and PDF workstation** for images, videos, and PDFs on
+Windows. Open one file and only that file enters the list; open more files and
+they append to the same session. Folder scanning starts only when you
+explicitly choose or pass a folder. Auto reload preserves zoom, pan, playback
+position, and list position.
+
+Since 3.5, FigView also **edits PDFs**: annotations, in-place text rewriting
+with reflow, page management, redaction, form filling with saved identities,
+drawn/typed/image signatures plus real certificate signing, OCR for scanned
+documents, and one-click export to Word, Excel, PowerPoint, Markdown, HTML
+and text. Everything runs locally; nothing ever leaves the machine.
 
 ---
 
@@ -80,15 +87,100 @@ it does not erase either recent-items history.
 | Package | Needed for | Install |
 |---|---|---|
 | Pillow | everything | `pip install pillow` |
-| PyMuPDF | PDF / SVG / EPS / XPS / CBZ / EPUB | `pip install pymupdf` |
-| OpenCV | in-app video decoding through FFmpeg | `pip install opencv-python` |
+| PyMuPDF | PDF viewing, editing, OCR, signatures | `pip install pymupdf` |
+| OpenCV | in-app video decoding; OCR scan clean-up | `pip install opencv-python` |
+| pdf2docx + python-docx | Export to Word | `pip install pdf2docx python-docx` |
+| openpyxl | Export detected tables to Excel | `pip install openpyxl` |
+| python-pptx | Export to PowerPoint | `pip install python-pptx` |
+| pyHanko | Cryptographic (PAdES) certificate signing | `pip install pyhanko` |
 
-PyMuPDF and OpenCV are optional. Missing support produces an installation hint
-for that media type without preventing the rest of the app from starting.
+Everything below Pillow is optional. A missing library produces an actionable
+hint naming the exact pip command without preventing the app from starting.
+OCR additionally needs a Tesseract language pack; FigView downloads it on
+request into `%APPDATA%\FigureViewerApp\tessdata` (about 4 MB for English).
 
 OpenCV provides efficient in-app video decoding but does not output audio. The
 transport and details panel state this explicitly. For a clip whose soundtrack
 matters, use **Open in Default App**.
+
+---
+
+## What is new in 3.5: the PDF studio
+
+Press **E** on any PDF (or the **Edit** toolbar toggle) and the viewer becomes
+an editor. Everything below shares one undo history (`Ctrl+Z`), never touches
+the file on disk until an explicit `Ctrl+S`, and saves atomically (temp file
+plus rename), so a crash can never leave a half-written PDF.
+
+**Annotate.** Highlight, underline, strikeout, squiggly (`H U K Q`), free text
+(`T`), sticky notes (`N`), freehand ink (`P`), rectangles, ellipses, lines and
+arrows (`R O L A`). Select with `V`: drag to move, corner handles resize,
+`Delete` removes, a compact popover changes colours. Defaults follow your last
+choices.
+
+**Rewrite text in place.** Double-click a paragraph with the select tool, type,
+and `Ctrl+Enter`: the original glyphs are removed via precise line-level
+redaction and the new text reflows inside the block, matching the detected
+font family, size, colour, alignment and line height. **Find and Replace**
+(`Ctrl+H`) works document-wide with regular expressions and capture groups;
+one undo reverts a whole replace-all. Acrobat cannot do regex replace at all.
+
+**Organise pages.** The **Pages** strip shows live thumbnails: click to jump,
+drag to reorder, right-click to rotate, duplicate, insert (blank or another
+PDF), extract or delete pages. Merge whole PDFs from the File menu.
+
+**Redact.** Mark areas with `X`, then apply: content under the marks is
+permanently removed from the saved file, not hidden behind a black box.
+Images and vector art outside the marks are preserved exactly.
+
+**Fill forms with a saved identity.** A form PDF gets a form bar
+automatically: click any field to type into it, and **Auto-fill** matches your
+saved identity preset (name, address, e-mail, phone...) against field names,
+tooltips and nearby labels, in English, French and German conventions. Every
+value is reviewed before it is written, filling is one undo entry, and
+identity data stays in a local JSON you can read. Free placement of text and
+check marks works on flat, non-form PDFs too.
+
+**Sign.** Draw a signature with the mouse, type one, or import an image whose
+background is removed automatically; the library is persistent, and placement
+is a live draggable, resizable preview committed with Enter. For legally
+meaningful signing, **Certify with Certificate** produces a PAdES digital
+signature through pyHanko, with a locally generated PKCS#12 certificate if
+you have none; passphrases are asked per use and never stored. Acrobat Reader
+cannot create self-managed local certificates without an Adobe account.
+
+**OCR scanned documents.** `Tools > Recognise Text` downloads a Tesseract
+language pack on request (20 languages, fast or best variants) and overlays an
+invisible, selectable, searchable text layer without re-rasterising the page.
+An OpenCV clean-up pass (denoise, automatic deskew, adaptive threshold) runs
+first: on generated bad scans it cuts the median character error rate from
+3.2% to 0.2% (16x, one-sided paired Wilcoxon `p = 0.0031`, 24 pairs), with
+the largest wins at 8-12 degrees of skew where the baseline loses up to 14.5%
+of characters. OCR text also feeds search, copy, reflow and every exporter.
+
+**Export.** `Ctrl+Shift+E` exports to Word (.docx, real paragraphs via
+pdf2docx), Excel (.xlsx, one sheet per detected table; refuses to write an
+empty workbook), PowerPoint (.pptx, full-bleed slides with the page text in
+speaker notes), Markdown (headings inferred from font sizes, tables as pipe
+tables), styled HTML, plain text, or numbered page images. Scanned pages can
+be OCR'd on the fly so a photographed document still exports its text. Adobe
+charges a subscription for exactly this; FigView does it locally for free.
+
+Performance on the reference machine: a highlight plus full repaint takes
+17 ms median; atomic saves take 38/89/237 ms for 2/10/40-page documents;
+export throughput is 684 pages/s (text), 45 (Markdown), 37 (Excel), 19
+(Word), 18 (PowerPoint). See the
+[validation figure](benchmarks/results/pdf_studio_v35.png),
+[raw data](benchmarks/results/pdf_studio_v35_raw.csv),
+[statistics](benchmarks/results/pdf_studio_v35_statistics.csv), and
+[reproducible benchmark](benchmarks/benchmark_v35.py).
+
+Where Acrobat still wins, stated honestly: FigView's reflow editor works at
+paragraph level with substituted fonts (embedded subset fonts cannot legally
+gain new glyphs), it has no cloud collaboration, and its OCR has no automatic
+language detection. Where FigView wins: local-first speed and privacy, free
+export, regex replace, reviewed identity auto-fill, self-managed certificate
+signing, honest atomic saves, and one undo history across every kind of edit.
 
 ---
 
@@ -386,6 +478,14 @@ figureviewer/
     video.py               bounded threaded OpenCV playback and thumbnails
     viewer.py              the viewer window: canvas, view transform, commands
     app.py                 Tk root, settings, window registry, single instance
+    pdfedit.py             PDF edit sessions: commands, undo/redo, atomic save
+    reflow.py              paragraph rewriting with reflow, find and replace
+    forms.py               AcroForm model, identity presets, reviewed auto-fill
+    signing.py             signature library, stamping, pyHanko certificates
+    ocr.py                 integrated-Tesseract OCR, clean-up, language packs
+    pdfexport.py           Word / Excel / PowerPoint / Markdown / HTML / text
+    editui.py              the edit-mode controller wired into the viewer
+    dialogs.py             themed dialogs: export, signatures, identities, OCR
 ```
 
 Settings remain in `%APPDATA%\FigureViewerApp\settings.json` so the rename does

@@ -165,6 +165,122 @@ def _draw_icon(name: str, size: int, colour: str, accent: str) -> Image.Image:
     elif name == "video":
         rectangle((3, 5, 21, 19), radius=2)
         polygon(((10, 8), (17, 12), (10, 16)), fill=accent)
+
+    # --- PDF editing glyphs ------------------------------------------------
+    elif name == "pen":
+        # Diagonal pen: nib triangle, shaft, accent cap.
+        polygon(((4, 20), (5.2, 15.8), (8.2, 18.8)))
+        line(((6.6, 17.4), (15.8, 8.2)))
+        line(((16.4, 7.6), (19.2, 4.8)), fill=accent)
+    elif name == "highlighter":
+        # Chisel-tip marker over an accent swipe of "ink".
+        polygon(((5, 18), (7.5, 13.5), (10.5, 16.5), (9, 19)), fill=accent)
+        line(((9, 15), (16.5, 7.5)))
+        rectangle((4, 20.2, 20, 22), outline=None, fill=accent, width=0)
+    elif name == "underline":
+        # A "U" letterform with the accent rule beneath it.
+        line(((8, 4.5), (8, 10.5)))
+        line(((16, 4.5), (16, 10.5)))
+        draw.arc((*pt(8, 6), *pt(16, 15)), start=0, end=180, fill=colour, width=stroke)
+        line(((6, 19), (18, 19)), fill=accent)
+    elif name == "strikeout":
+        # A "T" letterform struck through in accent.
+        line(((7, 5), (17, 5)))
+        line(((12, 5), (12, 19)))
+        line(((5, 12), (19, 12)), fill=accent)
+    elif name == "squiggly":
+        # Text line with the wavy accent underline beneath.
+        line(((6, 6.5), (18, 6.5)))
+        line(((4, 17), (7, 13.5), (10, 17), (13, 13.5), (16, 17), (19, 13.5)),
+             fill=accent)
+    elif name == "textbox":
+        # Free-text annotation: a box holding a "T".
+        rectangle((4, 5, 20, 19), radius=1.5)
+        line(((9, 9.5), (15, 9.5)), width=max(3, stroke - 1))
+        line(((12, 9.5), (12, 15)), width=max(3, stroke - 1))
+    elif name == "note":
+        # Speech bubble with accent text lines.
+        rectangle((4, 4, 20, 16.5), radius=2)
+        polygon(((8, 16), (8, 21), (13, 16)))
+        line(((8, 8.5), (16, 8.5)), fill=accent, width=max(3, stroke - 1))
+        line(((8, 12), (14, 12)), fill=accent, width=max(3, stroke - 1))
+    elif name == "ink":
+        # Freehand stroke ending in an accent pen-down dot.
+        line(((4, 16), (7.5, 7), (12, 16.5), (16.5, 6.5), (20, 12)))
+        draw.ellipse((*pt(18.6, 10.6), *pt(21.4, 13.4)), fill=accent)
+    elif name == "shape":
+        # Square and accent circle overlapping: the shape palette.
+        rectangle((4, 4, 15, 15), radius=1)
+        draw.ellipse((*pt(9.5, 9.5), *pt(20.5, 20.5)), outline=accent, width=stroke)
+    elif name == "arrow":
+        # Bare diagonal arrow annotation (no box, unlike "external").
+        line(((5, 19), (16.2, 7.8)))
+        polygon(((19.5, 4.5), (12.8, 6.4), (17.6, 11.2)))
+    elif name == "redact":
+        # Page with a solid blacked-out bar; callers tint with tone="danger".
+        rectangle((4, 5, 20, 19), radius=1.5)
+        rectangle((7, 9, 17, 12.2), outline=None, fill=colour, width=0)
+        line(((7, 15.5), (14, 15.5)), width=max(3, stroke - 1))
+    elif name == "signature":
+        # Cursive flourish sitting on the accent signing line.
+        line(((4, 15), (7, 10), (10, 15), (13, 9.5), (15.5, 14)))
+        line(((4, 19.5), (20, 19.5)), fill=accent)
+    elif name == "certificate":
+        # Award seal with ribbons: certificate-based digital signature.
+        draw.ellipse((*pt(7, 3.5), *pt(17, 13.5)), outline=colour, width=stroke)
+        draw.ellipse((*pt(10.4, 6.9), *pt(13.6, 10.1)), fill=accent)
+        line(((10, 13), (8, 20.5)))
+        line(((14, 13), (16, 20.5)))
+    elif name == "form":
+        # Form sheet: two accent checkboxes with their field lines.
+        rectangle((4, 4, 20, 20), radius=1.5)
+        rectangle((7, 7, 10.5, 10.5), outline=accent, width=max(3, stroke - 1))
+        line(((13, 8.75), (17, 8.75)), width=max(3, stroke - 1))
+        rectangle((7, 13.5, 10.5, 17), outline=accent, width=max(3, stroke - 1))
+        line(((13, 15.25), (17, 15.25)), width=max(3, stroke - 1))
+    elif name == "export":
+        # Tray with the accent arrow leaving upward.
+        line(((4, 15), (4, 20), (20, 20), (20, 15)))
+        line(((12, 5), (12, 14.5)), fill=accent)
+        line(((8, 8.5), (12, 4.5), (16, 8.5)), fill=accent)
+    elif name == "ocr":
+        # Document crossed by the accent scan beam.
+        rectangle((5, 4, 19, 20), radius=1.5)
+        line(((8, 8), (16, 8)), width=max(3, stroke - 1))
+        line(((8, 16), (13, 16)), width=max(3, stroke - 1))
+        line(((3, 12), (21, 12)), fill=accent)
+    elif name == "replace":
+        # Two opposing arrows: find and replace swaps text.
+        line(((5, 8), (16, 8)))
+        polygon(((15.5, 5), (20, 8), (15.5, 11)))
+        line(((19, 16), (8, 16)), fill=accent)
+        polygon(((8.5, 13), (4, 16), (8.5, 19)), fill=accent)
+    elif name in ("undo", "redo"):
+        # U-turn arrows, mirrored: over the top, head pointing back down.
+        draw.arc((*pt(6, 5), *pt(18, 17)), start=180, end=360, fill=colour,
+                 width=stroke)
+        if name == "undo":
+            line(((18, 19.5), (18, 12)))
+            polygon(((3.4, 10.5), (8.6, 10.5), (6, 15.5)))
+        else:
+            line(((6, 19.5), (6, 12)))
+            polygon(((15.4, 10.5), (20.6, 10.5), (18, 15.5)))
+    elif name == "save":
+        # Floppy disk: accent shutter and label lines.
+        rectangle((4, 4, 20, 20), radius=2)
+        rectangle((9, 4.8, 15, 9.6), outline=None, fill=accent, width=0, radius=0.8)
+        line(((8, 14), (16, 14)), width=max(3, stroke - 1))
+        line(((8, 17), (14, 17)), width=max(3, stroke - 1))
+    elif name == "pages":
+        # Page-organizer grid of thumbnails, current page in accent.
+        rectangle((4, 4, 11, 11), radius=1, width=max(3, stroke - 1))
+        rectangle((13, 4, 20, 11), radius=1, width=max(3, stroke - 1))
+        rectangle((4, 13, 11, 20), radius=1, width=max(3, stroke - 1))
+        rectangle((13, 13, 20, 20), outline=accent, radius=1, width=max(3, stroke - 1))
+    elif name == "select":
+        # Classic pointer cursor for the selection tool.
+        polygon(((7, 3), (7, 17.5), (10.8, 13.8), (13.6, 20.2), (16.2, 19.0),
+                 (13.4, 12.8), (18.6, 12.4)))
     else:
         draw.ellipse((*pt(6, 6), *pt(18, 18)), outline=colour, width=stroke)
 

@@ -579,7 +579,17 @@ class VectorDocument(Document):
         self.base_dpi = base_dpi
         self._doc = fitz.open(stream=data, filetype=entry.path.suffix.lstrip("."))
         self.page_count = max(1, self._doc.page_count)
-        self._lock = threading.Lock()
+        # Reentrant: render_region and text() call _page() while already
+        # holding the lock, and the editing subclass in pdfedit.py runs
+        # whole mutate-then-invalidate sequences under one acquisition.
+        # PyMuPDF documents are not thread safe, so every fitz access -
+        # geometry reads included - happens inside this lock; workers render
+        # while the Tk thread mutates, and the lock serialises them.
+        self._lock = threading.RLock()
+        #: Bumped by the editing subclass after every content mutation.
+        #: Cached rasterisations remember the version they were made from,
+        #: so a stale tile can never be served after an edit.
+        self.content_version = 0
         # Last rasterisation, rendered with a margin around the requested box.
         # Panning inside that margin is then a pure crop instead of a
         # re-rasterisation, which is the difference between 100 ms and 1 ms.
@@ -603,14 +613,21 @@ class VectorDocument(Document):
     def _page(self, page: int):
         return self._doc.load_page(max(0, min(page, self.page_count - 1)))
 
+    def invalidate_tiles(self) -> None:
+        """Drop the padded raster cache so the next repaint re-rasterises."""
+        with self._lock:
+            self._tile = None
+
     def page_size(self, page: int) -> tuple[int, int]:
-        rect = self._page(page).rect
+        with self._lock:
+            rect = self._page(page).rect
         factor = self.base_dpi / 72.0
         return max(1, int(round(rect.width * factor))), max(1, int(round(rect.height * factor)))
 
     def page_size_points(self, page: int) -> tuple[float, float]:
         """Physical page dimensions in PDF points (1/72 inch)."""
-        rect = self._page(page).rect
+        with self._lock:
+            rect = self._page(page).rect
         return float(rect.width), float(rect.height)
 
     def page_format(self, page: int) -> str:
@@ -647,6 +664,9 @@ class VectorDocument(Document):
         clip = fitz.Rect(p_left / factor, p_top / factor, p_right / factor, p_bottom / factor)
         matrix = fitz.Matrix(scale * factor, scale * factor)
         with self._lock:
+            # The version is captured under the same lock as the pixels, so a
+            # tile rendered just before an edit can never masquerade as fresh.
+            version = self.content_version
             pix = self._page(page).get_pixmap(
                 matrix=matrix, clip=clip, alpha=False,
                 colorspace=fitz.csRGB, annots=True,
@@ -654,7 +674,8 @@ class VectorDocument(Document):
         image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
         if image.width * image.height <= 24_000_000:   # ~72 MB RGB, keep it bounded
             self._tile = {"page": page, "scale": image.width / max(p_right - p_left, 1e-6),
-                          "box": (p_left, p_top, p_right, p_bottom), "image": image}
+                          "box": (p_left, p_top, p_right, p_bottom), "image": image,
+                          "version": version}
         result = self._crop_from_tile(page, (left, top, right, bottom), (out_w, out_h), scale)
         if result is not None:
             return result
@@ -666,6 +687,8 @@ class VectorDocument(Document):
         # A 1 % shortfall in resolution is invisible and avoids cache misses
         # caused purely by rounding the output size to whole pixels.
         if tile is None or tile["page"] != page or tile["scale"] < scale * 0.99:
+            return None
+        if tile.get("version", 0) != self.content_version:
             return None
         left, top, right, bottom = box
         t_left, t_top, t_right, t_bottom = tile["box"]
@@ -749,6 +772,23 @@ class DocumentCache:
         key = entry.key + (pdf_dpi if entry.kind == KIND_DOC else 0,)
         with self._lock:
             return self._items.get(key)
+
+    def evict(self, path: Path) -> int:
+        """Close and drop every cached document for ``path``.
+
+        Called after an edited PDF is saved: the bytes on disk no longer match
+        what any cached document was opened from, whatever its stamp says
+        (stamps have mtime granularity; a fast save can leave them equal).
+        """
+        target = str(path)
+        with self._lock:
+            stale_keys = [key for key in self._order if key[0] == target]
+            stale = [self._items.pop(key) for key in stale_keys]
+            for key in stale_keys:
+                self._order.remove(key)
+        for document in stale:
+            document.close()
+        return len(stale)
 
     def clear(self) -> None:
         with self._lock:

@@ -12,6 +12,7 @@ popups are native ``tk.Menu`` widgets, and those *do* honour colour options.
 """
 from __future__ import annotations
 
+import threading
 import tkinter as tk
 from dataclasses import dataclass
 from tkinter import font as tkfont
@@ -275,6 +276,17 @@ def apply_theme(root: tk.Misc, palette: Palette) -> None:
                     padding=(10, 5), relief="flat", width=0)
     style.map("Accent.TButton", background=[("active", p.accent), ("pressed", p.accent)])
 
+    # Destructive confirmations (apply redactions, discard changes). Same
+    # geometry as Accent.TButton so the two can sit side by side in a dialog
+    # row; the map keeps the danger fill under hover/press instead of letting
+    # clam swap in its grey active colour, exactly as Accent.TButton does.
+    style.configure("Danger.TButton", background=p.danger, foreground=p.accent_text,
+                    padding=(10, 5), relief="flat", width=0)
+    style.map("Danger.TButton",
+              background=[("pressed", p.danger), ("active", p.danger),
+                          ("disabled", p.panel)],
+              foreground=[("disabled", p.muted)])
+
     # Segmented control: radio buttons that look like a joined button group.
     # The indicator element is dropped from the layout entirely - setting
     # `indicatorsize=0` still leaves a gap in the clam theme.
@@ -385,6 +397,17 @@ def apply_theme(root: tk.Misc, palette: Palette) -> None:
         style.configure(LIST_TREE, indent=14)
     except tk.TclError:
         pass
+
+    # Lists inside edit dialogs (annotation census, page organiser, language
+    # packs). A treeview reads ``rowheight`` from its own style name only, so
+    # pinning it here keeps these rows stable when configure_list_density
+    # resizes the file list for thumbnails.
+    style.configure("EditList.Treeview", background=p.panel_alt,
+                    fieldbackground=p.panel_alt, foreground=p.text,
+                    borderwidth=0, relief="flat", rowheight=26, font="FVui")
+    style.map("EditList.Treeview",
+              background=[("selected", p.accent)],
+              foreground=[("selected", p.accent_text)])
 
     # --- scrollbars -------------------------------------------------------
     for orient in ("Vertical", "Horizontal"):
@@ -528,6 +551,242 @@ class Tooltip:
 def bind_tooltip(widget: tk.Misc, text: str, palette: Palette) -> Tooltip:
     """Convenience wrapper so callers do not keep a reference themselves."""
     return Tooltip(widget, text, palette)
+
+
+class ThemedDialog(tk.Toplevel):
+    """Base class for every palette-aware dialog in the app.
+
+    Tk's stock dialogs draw OS chrome colours that clash with both palettes,
+    so FigView builds its own on the shortcuts-window precedent: a plain
+    ``Toplevel`` painted from the palette, transient over its parent, with a
+    ttk body frame the subclass populates. Keyboard contract: Escape cancels,
+    Return accepts, closing from the title bar cancels.
+
+    Two ways to use it:
+
+    * Modal (the common case): populate ``self.body`` in the subclass
+      ``__init__``, call :meth:`add_button_row`, then have the caller run
+      :meth:`wait`, which centres the window, grabs input, blocks until the
+      dialog closes, and returns :attr:`result` (``None`` on cancel).
+    * Non-modal (find/replace): simply never call :meth:`wait`; the window
+      behaves like any other transient toplevel.
+
+    Subclasses override :meth:`validate` (veto an accept) and :meth:`apply`
+    (produce the value stored in :attr:`result`).
+    """
+
+    def __init__(self, parent: tk.Misc, palette: Palette, title: str = "") -> None:
+        super().__init__(parent)
+        self.palette = palette
+        self.result: object = None
+        self.title(title)
+        self.configure(background=palette.bg)
+        self.transient(parent.winfo_toplevel())
+        self.resizable(False, False)
+        # The body frame subclasses populate. "TFrame" is styled with the
+        # window background, so widgets inside it sit on the same surface in
+        # both palettes; the padding matches the shortcuts window.
+        self.body = ttk.Frame(self, padding=(20, 16), style="TFrame")
+        self.body.pack(fill="both", expand=True)
+        self.ok_button: Optional[ttk.Button] = None
+        self.cancel_button: Optional[ttk.Button] = None
+        # Toplevel-level bindings fire for key presses anywhere inside the
+        # dialog because every child widget's bindtags include its toplevel.
+        self.bind("<Escape>", self.cancel)
+        self.bind("<Return>", self.accept)
+        self.protocol("WM_DELETE_WINDOW", self.cancel)
+
+    # ------------------------------------------------------------- buttons
+    def add_button_row(self, ok_text: str = "OK", cancel_text: Optional[str] = "Cancel",
+                       ok_style: str = "Accent.TButton") -> ttk.Frame:
+        """Append the standard right-aligned button row to the body.
+
+        ``ok_style`` may be ``"Danger.TButton"`` for destructive confirms.
+        Pass ``cancel_text=None`` for single-button dialogs. The buttons are
+        kept on ``self.ok_button`` / ``self.cancel_button`` so subclasses can
+        enable or disable them, and the row frame is returned for anything
+        that wants to pack extra controls beside them.
+        """
+        row = ttk.Frame(self.body, style="TFrame")
+        row.pack(fill="x", pady=(14, 0))
+        self.ok_button = ttk.Button(row, text=ok_text, style=ok_style,
+                                    command=self.accept, takefocus=True)
+        self.ok_button.pack(side="right")
+        if cancel_text is not None:
+            self.cancel_button = ttk.Button(row, text=cancel_text, style="TButton",
+                                            command=self.cancel, takefocus=True)
+            self.cancel_button.pack(side="right", padx=(0, 8))
+        return row
+
+    # ----------------------------------------------------------- lifecycle
+    def validate(self) -> bool:
+        """Return False to keep the dialog open when accept is requested."""
+        return True
+
+    def apply(self) -> object:
+        """Produce the value :meth:`wait` returns. Default: True."""
+        return True
+
+    def accept(self, _event=None) -> None:
+        """Validate, store the result, and close."""
+        if not self.validate():
+            return
+        self.result = self.apply()
+        self.close()
+
+    def cancel(self, _event=None) -> None:
+        """Close with ``result`` still None."""
+        self.result = None
+        self.close()
+
+    def close(self) -> None:
+        """Release the grab (if held) and destroy the window."""
+        try:
+            self.grab_release()
+        except tk.TclError:
+            pass
+        try:
+            self.destroy()
+        except tk.TclError:
+            pass
+
+    def place_over_parent(self) -> None:
+        """Centre the dialog over its parent toplevel (best effort)."""
+        try:
+            self.update_idletasks()
+            master = self.master.winfo_toplevel()
+            x = master.winfo_rootx() + (master.winfo_width() - self.winfo_reqwidth()) // 2
+            y = master.winfo_rooty() + (master.winfo_height() - self.winfo_reqheight()) // 3
+            self.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+        except tk.TclError:
+            pass
+
+    def _grab_when_mapped(self, _event=None) -> None:
+        """Second grab attempt, fired once the window is actually mapped."""
+        try:
+            self.grab_set()
+        except tk.TclError:
+            pass
+
+    def wait(self) -> object:
+        """Run modally: grab, block until closed, return :attr:`result`.
+
+        simpledialog's wait_visibility-then-grab idiom deadlocks when the
+        parent is not mapped (the transient never becomes visible, so the
+        wait never returns). Instead the grab is attempted immediately and,
+        if the window is not yet viewable, retried from its ``<Map>`` event;
+        either way this method never blocks on anything but wait_window.
+        """
+        self.place_over_parent()
+        try:
+            self.deiconify()
+        except tk.TclError:
+            pass
+        self.bind("<Map>", self._grab_when_mapped, add="+")
+        self._grab_when_mapped()
+        self.focus_set()
+        self.wait_window(self)
+        return self.result
+
+
+class ThemedProgressDialog(tk.Toplevel):
+    """A palette-aware determinate progress window for long worker jobs.
+
+    Built for the worker-thread pattern: the Tk thread constructs it, the
+    worker periodically schedules ``after``-callbacks that call
+    :meth:`update_progress`, and it polls :attr:`cancel_event` (a
+    ``threading.Event``) between units of work. Pressing Cancel (or Escape,
+    or the close box) only *sets* the event; the worker acknowledges by
+    finishing its current unit and having the Tk thread call :meth:`close`.
+    Every UI touch is guarded, so a straggling after-callback that lands
+    after :meth:`close` is a no-op rather than a TclError.
+    """
+
+    def __init__(self, parent: tk.Misc, palette: Palette, title: str,
+                 cancellable: bool = True) -> None:
+        super().__init__(parent)
+        self.palette = palette
+        self.cancel_event = threading.Event()
+        self._closed = False
+        self.title(title)
+        self.configure(background=palette.bg)
+        self.transient(parent.winfo_toplevel())
+        self.resizable(False, False)
+        frame = ttk.Frame(self, padding=(20, 16), style="TFrame")
+        frame.pack(fill="both", expand=True)
+        self.status = ttk.Label(frame, text="", style="TLabel", anchor="w")
+        self.status.pack(fill="x")
+        self.bar = ttk.Progressbar(frame, mode="determinate", length=340,
+                                   maximum=100, value=0)
+        self.bar.pack(fill="x", pady=(10, 0))
+        self.cancel_button: Optional[ttk.Button] = None
+        if cancellable:
+            self.cancel_button = ttk.Button(frame, text="Cancel", style="TButton",
+                                            command=self._request_cancel)
+            self.cancel_button.pack(anchor="e", pady=(12, 0))
+            self.bind("<Escape>", self._request_cancel)
+            self.protocol("WM_DELETE_WINDOW", self._request_cancel)
+        else:
+            # The job cannot be interrupted, so the close box does nothing.
+            self.protocol("WM_DELETE_WINDOW", lambda: None)
+        # Grab once the window is actually mapped; grabbing earlier raises on
+        # some platforms, and a busy worker loop must never crash over it.
+        self.bind("<Map>", self._grab_when_mapped, add="+")
+        try:
+            self.update_idletasks()
+            master = parent.winfo_toplevel()
+            x = master.winfo_rootx() + (master.winfo_width() - self.winfo_reqwidth()) // 2
+            y = master.winfo_rooty() + (master.winfo_height() - self.winfo_reqheight()) // 3
+            self.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+        except tk.TclError:
+            pass
+
+    def _grab_when_mapped(self, _event=None) -> None:
+        if self._closed:
+            return
+        try:
+            self.grab_set()
+        except tk.TclError:
+            pass
+
+    def _request_cancel(self, _event=None) -> None:
+        """Signal the worker; the dialog stays up until the worker closes it."""
+        self.cancel_event.set()
+        if self.cancel_button is not None:
+            try:
+                self.cancel_button.state(["disabled"])
+                self.status.configure(text="Cancelling…")
+            except tk.TclError:
+                pass
+
+    def update_progress(self, done: int, total: int, text: str = "") -> None:
+        """Advance the bar; safe to call from after-callbacks at any time."""
+        if self._closed:
+            return
+        try:
+            if not self.winfo_exists():
+                return
+            total = max(1, int(total))
+            self.bar.configure(maximum=total,
+                               value=min(max(int(done), 0), total))
+            if text and not self.cancel_event.is_set():
+                self.status.configure(text=text)
+        except tk.TclError:
+            pass
+
+    def close(self) -> None:
+        """Tear the window down; further update_progress calls are no-ops."""
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self.grab_release()
+        except tk.TclError:
+            pass
+        try:
+            self.destroy()
+        except tk.TclError:
+            pass
 
 
 def toolbar_button(master: tk.Misc, text: str, command: Callable[[], None],

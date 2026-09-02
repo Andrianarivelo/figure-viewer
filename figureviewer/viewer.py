@@ -44,6 +44,7 @@ from . import APP_NAME, APP_VERSION
 from . import docs as D
 from . import video as V
 from . import winclip
+from .editui import EditController
 from .icons import IconFactory
 from .theme import (LIST_FLAT, LIST_TREE, SIDEBAR_DEFAULT, SIDEBAR_MAX,
                     SIDEBAR_MIN, MenuBar, Palette, bind_tooltip,
@@ -306,6 +307,10 @@ class ViewerWindow(tk.Toplevel):
         self.configure(background=self.palette.bg)
 
         self._build_ui()
+        # The edit controller wires itself into the toolbar, the stage rows
+        # and (below) the menus, so it must exist between the two builders.
+        self.edit = EditController(self)
+        self.edit.build_toolbar_button(self.actionbar)
         self._build_menus()
         self._bind_keys()
         self.protocol("WM_DELETE_WINDOW", self.close)
@@ -407,6 +412,7 @@ class ViewerWindow(tk.Toplevel):
 
         actionbar = ttk.Frame(bar, style="Toolbar.TFrame")
         actionbar.grid(row=1, column=0, columnspan=5, sticky="ew", pady=(6, 0))
+        self.actionbar = actionbar
 
         zoom = ttk.Frame(actionbar, style="ToolbarGroup.TFrame", padding=2)
         zoom.pack(side="left", padx=(0, 8))
@@ -749,7 +755,18 @@ class ViewerWindow(tk.Toplevel):
         file_menu.add_cascade(label="Recent Folders", menu=self.recent_folders_menu)
         file_menu.add_command(label="Parent Folder", accelerator="Backspace", command=self.go_parent)
         file_menu.add_separator()
-        file_menu.add_command(label="Save Page / Frame As…", accelerator="Ctrl+S",
+        file_menu.add_command(label="Save PDF", accelerator="Ctrl+S",
+                              command=lambda: self.edit.save())
+        file_menu.add_command(label="Save PDF As…", command=self.edit.save_as)
+        file_menu.add_command(label="Export To Word / Excel / PowerPoint…",
+                              accelerator="Ctrl+Shift+E",
+                              command=self.edit.open_export)
+        file_menu.add_command(label="Certify with Certificate…",
+                              command=self.edit.sign_with_certificate)
+        file_menu.add_command(label="Merge PDFs at End…",
+                              command=self.edit.merge_append_files)
+        file_menu.add_separator()
+        file_menu.add_command(label="Save Page / Frame As…",
                               command=self.save_page_as)
         file_menu.add_command(label="Save Snip As…", accelerator="Ctrl+Shift+S", command=self.save_snip_as)
         file_menu.add_command(label="Export All Pages…", command=self.export_all_pages)
@@ -761,6 +778,21 @@ class ViewerWindow(tk.Toplevel):
         file_menu.add_command(label="Exit", accelerator="Alt+F4", command=self.app.quit_all)
 
         edit_menu = self.menubar.add_menu("Edit", underline=0)
+        edit_menu.add_command(label="Undo", accelerator="Ctrl+Z",
+                              command=self.edit.undo, state="disabled")
+        edit_menu.add_command(label="Redo", accelerator="Ctrl+Y",
+                              command=self.edit.redo, state="disabled")
+        # The controller rewrites these two labels live with the operation
+        # name ("Undo Add highlight"), so it needs their menu and indices.
+        self._edit_menu_indices = (edit_menu, 0, 1)
+        edit_menu.add_separator()
+        edit_menu.add_command(label="Edit PDF", accelerator="E",
+                              command=self.edit.toggle_mode)
+        edit_menu.add_command(label="Find and Replace…", accelerator="Ctrl+H",
+                              command=self.edit.open_find)
+        edit_menu.add_command(label="Discard PDF Edits",
+                              command=self.edit.discard_session)
+        edit_menu.add_separator()
         edit_menu.add_command(label="Copy Image / Video Frame", accelerator="Ctrl+C",
                               command=self.copy_image)
         edit_menu.add_command(label="Copy Visible View", accelerator="Ctrl+Shift+V", command=self.copy_view)
@@ -861,6 +893,11 @@ class ViewerWindow(tk.Toplevel):
         tools_menu.add_command(label="PDF Render Quality…", command=self.set_pdf_dpi)
         tools_menu.add_command(label="Copy / Export DPI…", command=self.set_export_dpi)
         tools_menu.add_separator()
+        tools_menu.add_command(label="Recognise Text (OCR)…",
+                               command=self.edit.open_ocr)
+        tools_menu.add_command(label="Identity Presets…",
+                               command=self.edit.open_identities)
+        tools_menu.add_separator()
         tools_menu.add_command(label="Rescan Folder", accelerator="F5", command=self.reload_all)
         tools_menu.add_command(label="Clear Caches", command=self.clear_caches)
         tools_menu.add_separator()
@@ -910,6 +947,14 @@ class ViewerWindow(tk.Toplevel):
         self.app.settings[key] = []
         self.app.broadcast_recent()
 
+    def _refresh_signature_ui(self) -> None:
+        """App broadcast: another window changed the signature library."""
+        self.edit.refresh_signature_ui()
+
+    def _refresh_identity_ui(self) -> None:
+        """App broadcast: another window changed the identity presets."""
+        self.edit.refresh_identity_ui()
+
     # ------------------------------------------------------------- bindings
     def _bind_keys(self) -> None:
         """Window-level shortcuts.
@@ -932,8 +977,13 @@ class ViewerWindow(tk.Toplevel):
         bind("<Control-o>", lambda e: self.choose_folder())
         bind("<Control-O>", lambda e: self.choose_file())
         bind("<Control-w>", lambda e: self.close())
-        bind("<Control-s>", lambda e: self.save_page_as())
+        bind("<Control-s>", lambda e: self._on_ctrl_s())
         bind("<Control-S>", lambda e: self.save_snip_as())
+        bind("<Control-z>", guard(self.edit.undo))
+        bind("<Control-y>", guard(self.edit.redo))
+        bind("<Control-Z>", guard(self.edit.redo))
+        bind("<Control-h>", lambda e: self.edit.open_find())
+        bind("<Control-E>", lambda e: self.edit.open_export())
         bind("<Control-e>", lambda e: self.reveal_in_explorer())
         bind("<Control-f>", lambda e: self.focus_search())
         bind("<Control-g>", lambda e: self.goto_page())
@@ -971,7 +1021,7 @@ class ViewerWindow(tk.Toplevel):
         bind("<Prior>", guard(lambda: self.change_page(-1)))
         bind("<Next>", guard(lambda: self.change_page(1)))
         bind("<BackSpace>", guard(self.go_parent))
-        bind("<Return>", guard(self.open_default_app))
+        bind("<Return>", guard(self._on_return_key))
         bind("<F1>", lambda e: self.show_shortcuts())
         bind("<F5>", lambda e: self.reload_all())
         bind("<F9>", lambda e: (self.slideshow_on.set(not self.slideshow_on.get()), self._slideshow_changed()))
@@ -980,7 +1030,31 @@ class ViewerWindow(tk.Toplevel):
         bind("<space>", guard(self.toggle_video))
         bind("<s>", guard(lambda: (self.snip_mode.set(not self.snip_mode.get()), self._snip_mode_changed())))
         bind("<i>", guard(lambda: (self.invert.set(not self.invert.get()), self.redraw_now())))
-        bind("<Delete>", guard(self.delete_current))
+        bind("<Delete>", guard(self._on_delete_key))
+        bind("<e>", guard(self.edit.toggle_mode))
+        # Single-key tool switches; inert outside edit mode and inside text
+        # fields (set_tool checks edit.active, guard checks _typing).
+        for key, tool in (("v", "select"), ("h", "highlight"),
+                          ("u", "underline"), ("k", "strikeout"),
+                          ("q", "squiggly"), ("t", "text"), ("n", "note"),
+                          ("p", "ink"), ("r", "rect"), ("o", "ellipse"),
+                          ("l", "line"), ("a", "arrow"), ("x", "redact")):
+            bind(f"<{key}>", guard(lambda t=tool: self.edit.set_tool(t)))
+
+    def _on_ctrl_s(self) -> None:
+        """Ctrl+S: save PDF edits when a session needs it, else legacy save."""
+        if not self.edit.save_shortcut():
+            self.save_page_as()
+
+    def _on_delete_key(self) -> None:
+        """Delete removes the selected annotation in edit mode, else the file."""
+        if not self.edit.on_delete():
+            self.delete_current()
+
+    def _on_return_key(self) -> None:
+        """Return commits a pending signature placement, else opens the file."""
+        if not self.edit.commit_placement():
+            self.open_default_app()
 
     def _bind_canvas(self) -> None:
         canvas = self.canvas
@@ -1371,10 +1445,17 @@ class ViewerWindow(tk.Toplevel):
         if not same:
             self.load(self.filtered[index])
         else:
-            # Same file: only reload when the bytes changed.
+            # Same file: only reload when the bytes changed, and never
+            # underneath an edit session that has not been reconciled.
             fresh = self.filtered[index]
             if self.auto_reload.get() and self.current and fresh.stamp != self.current.stamp:
-                self.load(fresh, keep_view=True, note="Reloaded")
+                decision = self.edit.reload_decision(fresh)
+                if decision == "adopt":
+                    self.edit.adopt_entry(fresh)
+                elif decision == "reload":
+                    self.load(fresh, keep_view=True, note="Reloaded")
+                else:
+                    self.current = fresh
             else:
                 self.current = fresh
 
@@ -1588,6 +1669,9 @@ class ViewerWindow(tk.Toplevel):
             self._sync_pdf_controls()
             self._update_status(note)
             self._update_info()
+            # A parked edit session for this file takes over the document
+            # object here, restoring dirty state and undo history.
+            self.edit.on_document_loaded()
             self._prefetch_neighbours()
 
         def failed(exc):
@@ -1598,6 +1682,7 @@ class ViewerWindow(tk.Toplevel):
             self.canvas.delete("all")
             self._draw_message(str(exc))
             self.status_var.set(f"Could not open {entry.relname}: {exc}")
+            self.edit.sync_toolbar()
 
         self.app.worker.submit(job, done, failed)
 
@@ -2047,6 +2132,7 @@ class ViewerWindow(tk.Toplevel):
         canvas.tag_lower("scene")
         self._photo = photo
         self._draw_minimap()
+        self.edit.draw_overlay()
 
     def _draw_empty(self) -> None:
         if self.explicit_paths is None:
@@ -2172,6 +2258,12 @@ class ViewerWindow(tk.Toplevel):
             self.redraw_now()
             return "break"
 
+        # While editing, the wheel never crosses a page boundary: a drawing
+        # gesture must not flip the page underneath itself. PageUp/Down and
+        # the page bar still navigate.
+        if self.edit.wheel_scrolls():
+            return "break"
+
         now = time.perf_counter()
         if now - self._last_pdf_page_at < PDF_WHEEL_COOLDOWN_S:
             return "break"
@@ -2183,6 +2275,10 @@ class ViewerWindow(tk.Toplevel):
         self.canvas.focus_set()
         if self._minimap_click(event):
             return
+        # The edit controller gets the event before snip and pan, exactly the
+        # snip idiom: a handled press must never also set a pan anchor.
+        if self.edit.on_press(event):
+            return
         if self.snip_mode.get():
             self._snip_start = (event.x, event.y)
             self._snip_rect = None
@@ -2191,6 +2287,8 @@ class ViewerWindow(tk.Toplevel):
         self.canvas.configure(cursor="fleur")
 
     def _on_drag(self, event) -> None:
+        if self.edit.on_drag(event):
+            return
         if self._snip_start is not None:
             self._update_snip_overlay(event.x, event.y, shift=bool(event.state & 0x0001))
             return
@@ -2204,6 +2302,8 @@ class ViewerWindow(tk.Toplevel):
         self.redraw_now()
 
     def _on_release(self, event) -> None:
+        if self.edit.on_release(event):
+            return
         if self._snip_start is not None:
             self._finish_snip(event.x, event.y)
             return
@@ -2230,6 +2330,10 @@ class ViewerWindow(tk.Toplevel):
         """Toggle between fit-page and 100 %."""
         if self._video_session is not None:
             self.toggle_video()
+            return
+        if self.edit.commit_placement():
+            return
+        if self.edit.on_double_click(_event):
             return
         if abs(self.scale - 1.0) < 1e-6:
             self.fit_page()
@@ -2293,6 +2397,8 @@ class ViewerWindow(tk.Toplevel):
     def _on_escape(self, _event=None) -> None:
         if self.attributes("-fullscreen"):
             self.attributes("-fullscreen", False)
+            return
+        if self.edit.on_escape():
             return
         if self.snip_mode.get() or self._snip_start is not None:
             self._snip_start = None
@@ -2720,6 +2826,7 @@ class ViewerWindow(tk.Toplevel):
 
     def _set_document_page(self, page: int, *, land_at_end: bool = False) -> None:
         """Apply one validated page index and refresh all page-specific UI."""
+        self.edit.on_page_changed()
         self.page = page
         self._minimap_key = None
         if self.fit_mode != FIT_FREE:
@@ -2988,7 +3095,11 @@ class ViewerWindow(tk.Toplevel):
                 if self.current and self.auto_reload.get():
                     fresh = by_path.get(self.current.path)
                     if fresh is not None and fresh.stamp != self.current.stamp:
-                        self.load(fresh, keep_view=True, note="Reloaded")
+                        decision = self.edit.reload_decision(fresh)
+                        if decision == "adopt":
+                            self.edit.adopt_entry(fresh)
+                        elif decision == "reload":
+                            self.load(fresh, keep_view=True, note="Reloaded")
 
             def failed(_exc):
                 self._watch_inflight = False
@@ -3006,6 +3117,10 @@ class ViewerWindow(tk.Toplevel):
             suffix = Path(self.explicit_paths[-1]).name
         else:
             suffix = "No files open"
+        # The dot is the unsaved-edits marker; edit may not exist during the
+        # very first title update in __init__.
+        if getattr(self, "edit", None) is not None and self.edit.dirty:
+            suffix += "  ●"
         self.title(f"{APP_NAME} - {suffix}")
 
     # ------------------------------------------------------------ read-outs
@@ -3130,6 +3245,7 @@ class ViewerWindow(tk.Toplevel):
         menu.add_separator()
         menu.add_command(label="Save Page As…", command=self.save_page_as)
         menu.add_command(label="Open in Default App", command=self.open_default_app)
+        self.edit.context_items(menu, event)
         menu.tk_popup(event.x_root, event.y_root)
 
     def _file_context_menu(self, event) -> None:
@@ -3200,6 +3316,18 @@ class ViewerWindow(tk.Toplevel):
             ("Up / Down", f"Jump back / forward {self.video_frame_step.get()} frames"),
             ("Transport bar", "Seek, stop, and toggle looping"),
             ("", ""),
+            ("Editing (PDF)", ""),
+            ("E", "Enter or leave edit mode"),
+            ("V / H / U / K / Q", "Select · highlight · underline · strike · squiggly"),
+            ("T / N / P", "Text box · sticky note · freehand ink"),
+            ("R / O / L / A / X", "Rectangle · ellipse · line · arrow · redact"),
+            ("Ctrl+Z / Ctrl+Y", "Undo / redo any edit"),
+            ("Ctrl+S", "Save edits into the PDF (atomic)"),
+            ("Ctrl+H", "Find and replace, regex included"),
+            ("Ctrl+Shift+E", "Export to Word, Excel, PowerPoint, and more"),
+            ("Delete", "Remove the selected annotation"),
+            ("Double click", "Edit a text box, or rewrite a paragraph in place"),
+            ("", ""),
             ("Files", ""),
             ("Ctrl+N / Ctrl+Shift+N", "New window / duplicate this window"),
             ("Ctrl+O / Ctrl+Shift+O", "Open folder / open file"),
@@ -3265,6 +3393,10 @@ class ViewerWindow(tk.Toplevel):
         """Persist state, cancel timers and hand back to the app."""
         if self._destroyed:
             return
+        # Unsaved PDF edits gate the close; cancel keeps the window open.
+        if not self.edit.confirm_close():
+            return
+        self.edit.detach_for_close()
         self._destroyed = True
         self._stop_video_session()
         self._cancel_scheduled_jobs()

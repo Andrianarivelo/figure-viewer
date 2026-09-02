@@ -1,0 +1,2 @@
+part,pairs,shapiro_difference_p,normal_difference_at_alpha,test,statistic,p_value,alpha,median_baseline,median_new
+ocr_cer,24,9.416581471025205e-06,False,one-sided paired Wilcoxon (baseline CER > preprocessed CER),163.0,0.0031051282952248745,0.05,0.031706968989198954,0.001949436259514427

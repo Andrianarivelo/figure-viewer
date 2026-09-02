@@ -90,6 +90,41 @@ DEFAULT_SETTINGS: dict = {
     "video_loop": False,
     # Up/Down jump this many video frames. Left/Right always move one frame.
     "video_frame_step": 10,
+    # ------------------------------------------------------------------ PDF
+    # studio (3.5): editing, signatures, identities, export, OCR. All pure
+    # additions, so the schema version stays at 3: load_settings simply merges
+    # missing keys from these defaults.
+    "annot_defaults": {
+        "highlight_color": "#ffd54a", "markup_opacity": 0.35,
+        "ink_color": "#d84343", "ink_width": 1.6,
+        "shape_stroke": "#d84343", "shape_fill": "", "shape_width": 1.4,
+        "text_font": "helv", "text_size": 11.0, "text_color": "#1a1a1a",
+        "note_icon": "Comment",
+    },
+    "edit_recent_colors": [],
+    # Signature metadata only; the PNG strokes live as files under
+    # SETTINGS_DIR/signatures so settings.json stays small.
+    "signature_library": [],
+    "active_signature": "",
+    "identity_presets": [],
+    "active_identity": "",
+    "export_prefs": {
+        "last_format": "docx", "range": "all", "image_format": "png",
+        "pptx_dpi": 150, "ocr_missing_text": True,
+    },
+    # Path only. Certificate passphrases are collected per signing action and
+    # are never persisted anywhere.
+    "sign_certificate_path": "",
+    "ocr_language": "eng",
+    "ocr_variant": "fast",
+    "ocr_preprocess": True,
+    "ocr_dpi": 300,
+    # Lowercased embedded font base name -> CSS family, merged over the
+    # built-in table in figureviewer.reflow.
+    "reflow_font_overrides": {},
+    # While edit mode is active a plain wheel scrolls/pans instead of turning
+    # pages, so a drawing gesture can never flip the page underneath itself.
+    "edit_wheel_scrolls": True,
 }
 
 
@@ -145,6 +180,29 @@ def load_settings() -> dict:
         values["video_frame_step"] = max(1, min(10_000, int(values["video_frame_step"])))
     except (KeyError, TypeError, ValueError):
         values["video_frame_step"] = DEFAULT_SETTINGS["video_frame_step"]
+    # PDF-studio keys: hand-edited JSON must never crash the app, so every
+    # structured value is type-checked and falls back to its default, and the
+    # dict-shaped ones are merged so a missing sub-key cannot KeyError later.
+    for key in ("signature_library", "identity_presets", "edit_recent_colors"):
+        if not isinstance(values.get(key), list):
+            values[key] = list(DEFAULT_SETTINGS[key])
+    for key in ("annot_defaults", "export_prefs", "reflow_font_overrides"):
+        merged = dict(DEFAULT_SETTINGS[key])
+        if isinstance(values.get(key), dict):
+            merged.update(values[key])
+        values[key] = merged
+    for key in ("active_signature", "active_identity", "sign_certificate_path",
+                "ocr_language", "ocr_variant"):
+        if not isinstance(values.get(key), str):
+            values[key] = DEFAULT_SETTINGS[key]
+    if values["ocr_variant"] not in ("fast", "best"):
+        values["ocr_variant"] = DEFAULT_SETTINGS["ocr_variant"]
+    try:
+        values["ocr_dpi"] = max(150, min(600, int(values["ocr_dpi"])))
+    except (KeyError, TypeError, ValueError):
+        values["ocr_dpi"] = DEFAULT_SETTINGS["ocr_dpi"]
+    values["ocr_preprocess"] = bool(values.get("ocr_preprocess", True))
+    values["edit_wheel_scrolls"] = bool(values.get("edit_wheel_scrolls", True))
     values.pop("recursive", None)
     values.pop("recent", None)
     return values
@@ -285,6 +343,11 @@ class App:
         self.thumb_cache: dict[tuple, object] = {}
         self.windows: list = []
         self._cascade = 0
+        # PDF edit sessions, keyed by normalised absolute path. App-level so
+        # they survive the theme toggle's window rebuild, and one-per-file so
+        # two windows can never hold divergent unsaved edits of one document.
+        self.edit_sessions: dict[str, object] = {}
+        self._session_owners: dict[str, object] = {}
 
         # A remembered directory is only a dialog starting point. It must not
         # silently become an active folder listing: folders open only after an
@@ -402,6 +465,13 @@ class App:
     def quit_all(self) -> None:
         """Save state, tear down the worker pool and exit the main loop."""
         save_settings(self.settings)
+        for session in list(self.edit_sessions.values()):
+            try:
+                session.close()
+            except Exception:
+                pass
+        self.edit_sessions.clear()
+        self._session_owners.clear()
         if getattr(self, "instance", None) is not None:
             self.instance.close()
         try:
@@ -459,6 +529,71 @@ class App:
             except Exception:
                 pass
 
+    # -------------------------------------------------------- edit sessions
+    @staticmethod
+    def session_key(path: Path) -> str:
+        try:
+            path = path.expanduser().resolve()
+        except OSError:
+            pass
+        return os.path.normcase(str(path))
+
+    def acquire_session(self, window, entry, *, base_dpi: float):
+        """Return ``(session, owned)`` for one PDF file.
+
+        The first window to ask becomes the owner; any other window asking
+        while the owner lives gets ``owned=False`` and must stay read-only.
+        A session whose owner window has closed (or was rebuilt by the theme
+        toggle) is adopted by the asker with its history and dirty state
+        intact.
+        """
+        from . import pdfedit
+
+        key = self.session_key(entry.path)
+        session = self.edit_sessions.get(key)
+        owner = self._session_owners.get(key)
+        owner_alive = owner is not None and owner in self.windows and owner is not window
+        if session is not None and owner_alive:
+            return session, False
+        if session is None:
+            session = pdfedit.EditSession(entry, base_dpi=base_dpi)
+            self.edit_sessions[key] = session
+        self._session_owners[key] = window
+        return session, True
+
+    def peek_session(self, path: Path):
+        """The session for ``path`` if one exists, without creating one."""
+        return self.edit_sessions.get(self.session_key(path))
+
+    def release_session(self, path: Path, *, close: bool = False) -> None:
+        """Detach the owner; with ``close`` also discard the session."""
+        key = self.session_key(path)
+        self._session_owners.pop(key, None)
+        if close:
+            session = self.edit_sessions.pop(key, None)
+            if session is not None:
+                try:
+                    session.close()
+                except Exception:
+                    pass
+
+    def dirty_sessions(self) -> list:
+        return [s for s in self.edit_sessions.values() if getattr(s, "dirty", False)]
+
+    def broadcast_signatures(self) -> None:
+        for window in self.windows:
+            try:
+                window._refresh_signature_ui()
+            except Exception:
+                pass
+
+    def broadcast_identities(self) -> None:
+        for window in self.windows:
+            try:
+                window._refresh_identity_ui()
+            except Exception:
+                pass
+
     def toggle_theme(self) -> None:
         """Switch between the dark and light palettes.
 
@@ -484,6 +619,10 @@ class App:
             except Exception:
                 pass
         self.windows.clear()
+        # Edit sessions are app-level and survive the rebuild; their owner
+        # windows do not. The rebuilt windows re-adopt sessions by path when
+        # they reload their documents.
+        self._session_owners.clear()
         apply_theme(self.root, self.palette)
         self._apply_row_height()
         self._cascade = 0
