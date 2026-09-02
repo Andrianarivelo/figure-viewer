@@ -1,0 +1,11 @@
+{
+  "base_dpi": 150.0,
+  "canvas_size": [
+    1000,
+    650
+  ],
+  "paired_batches": 20,
+  "calls_per_batch": 20000,
+  "alpha": 0.05,
+  "integrity": "Canonical MediaBox geometry only; no user documents read or modified."
+}

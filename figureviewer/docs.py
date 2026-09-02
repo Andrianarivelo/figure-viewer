@@ -211,6 +211,35 @@ DEPTH_UNLIMITED = -1
 #: the listing was cut short so it can say so instead of quietly lying.
 MAX_SCAN_ENTRIES = 20_000
 
+# Canonical paper sizes in PDF points. Matching is tolerant because producers
+# often round millimetres or include a fraction of a point in the MediaBox.
+PDF_PAGE_FORMATS: tuple[tuple[str, float, float], ...] = (
+    ("A0", 2383.94, 3370.39),
+    ("A1", 1683.78, 2383.94),
+    ("A2", 1190.55, 1683.78),
+    ("A3", 841.89, 1190.55),
+    ("A4", 595.28, 841.89),
+    ("A5", 419.53, 595.28),
+    ("Letter", 612.0, 792.0),
+    ("Legal", 612.0, 1008.0),
+    ("Tabloid", 792.0, 1224.0),
+)
+
+
+def classify_pdf_page(width_points: float, height_points: float,
+                      tolerance: float = 0.025) -> str:
+    """Identify a common PDF page format and orientation from its MediaBox."""
+    portrait = height_points >= width_points
+    short, long = sorted((float(width_points), float(height_points)))
+    for name, canonical_width, canonical_height in PDF_PAGE_FORMATS:
+        if (abs(short - canonical_width) / canonical_width <= tolerance
+                and abs(long - canonical_height) / canonical_height <= tolerance):
+            orientation = "Portrait" if portrait else "Landscape"
+            return f"{name} {orientation}"
+    width_mm = width_points * 25.4 / 72.0
+    height_mm = height_points * 25.4 / 72.0
+    return f"Custom {width_mm:.0f} × {height_mm:.0f} mm"
+
 
 def entries_for_paths(paths: list[Path], *, kinds: set[str]) -> list[Entry]:
     """Return metadata for an ordered, explicitly opened set of files.
@@ -559,6 +588,7 @@ class VectorDocument(Document):
         self.info = {
             "Format": (meta.get("format") or entry.path.suffix.upper().lstrip(".")),
             "Pages": str(self.page_count),
+            "Page format": self.page_format(0),
             "Render DPI": f"{base_dpi:.0f}",
         }
         for key in ("title", "author", "subject", "creator", "producer", "creationDate"):
@@ -577,6 +607,15 @@ class VectorDocument(Document):
         rect = self._page(page).rect
         factor = self.base_dpi / 72.0
         return max(1, int(round(rect.width * factor))), max(1, int(round(rect.height * factor)))
+
+    def page_size_points(self, page: int) -> tuple[float, float]:
+        """Physical page dimensions in PDF points (1/72 inch)."""
+        rect = self._page(page).rect
+        return float(rect.width), float(rect.height)
+
+    def page_format(self, page: int) -> str:
+        """Common paper name plus orientation, or measured custom dimensions."""
+        return classify_pdf_page(*self.page_size_points(page))
 
     def render_region(self, page: int, box, out_size, *, fast: bool = False) -> Image.Image:
         out_w = max(1, int(out_size[0]))
@@ -776,7 +815,7 @@ class Worker:
                                         thread_name_prefix="fv-worker")
         self._queue: "queue.Queue[tuple]" = queue.Queue()
         self._alive = True
-        self.root.after(self.poll_ms, self._drain)
+        self._drain_job = self.root.after(self.poll_ms, self._drain)
 
     def submit(self, job: Callable[[], object], done: Callable[[object], None],
                failed: Optional[Callable[[BaseException], None]] = None) -> None:
@@ -818,10 +857,14 @@ class Worker:
         finally:
             if self._alive:
                 try:
-                    self.root.after(self.poll_ms, self._drain)
+                    self._drain_job = self.root.after(self.poll_ms, self._drain)
                 except Exception:
                     self._alive = False
 
     def shutdown(self) -> None:
         self._alive = False
+        try:
+            self.root.after_cancel(self._drain_job)
+        except Exception:
+            pass
         self._pool.shutdown(wait=False, cancel_futures=True)

@@ -9,6 +9,12 @@ from figureviewer import docs as D
 
 
 class MediaClassificationTests(unittest.TestCase):
+    def test_pdf_page_format_detection_handles_orientation_and_custom_sizes(self) -> None:
+        self.assertEqual(D.classify_pdf_page(595.28, 841.89), "A4 Portrait")
+        self.assertEqual(D.classify_pdf_page(841.89, 595.28), "A4 Landscape")
+        self.assertEqual(D.classify_pdf_page(612, 792), "Letter Portrait")
+        self.assertEqual(D.classify_pdf_page(720, 720), "Custom 254 × 254 mm")
+
     def test_explicit_entries_preserve_order_and_never_scan_siblings(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

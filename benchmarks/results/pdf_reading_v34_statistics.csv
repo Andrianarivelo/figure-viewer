@@ -1,0 +1,2 @@
+paired_batches,calls_per_batch,shapiro_difference_p,normal_difference_at_alpha,test,wilcoxon_statistic,p_value,alpha
+20,20000,0.8085334656670033,True,one-sided paired Wilcoxon,210.0,9.5367431640625e-07,0.05

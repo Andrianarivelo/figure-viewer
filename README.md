@@ -1,4 +1,4 @@
-# FigView 3.3
+# FigView 3.4
 
 A fast, themed viewer for **images, videos, and PDFs** on Windows. Open one file
 and only that file enters the list; open more files and they append to the same
@@ -89,6 +89,38 @@ for that media type without preventing the rest of the app from starting.
 OpenCV provides efficient in-app video decoding but does not output audio. The
 transport and details panel state this explicitly. For a clip whose soundtrack
 matters, use **Open in Default App**.
+
+---
+
+## What is new in 3.4
+
+**Focused document view.** The visible **Files** toolbar control and `Ctrl+B`
+show or hide the file list so the document can use the full window. Enable
+**Hide in 5s** beside it, or **View > Auto-hide File List**, to reveal the list
+temporarily and reclaim its width after five seconds. Activity inside the list
+restarts the delay.
+
+**Continuous PDF scrolling.** A multi-page PDF now has a visible page bar with
+previous/next controls, current page, total pages, and detected paper format.
+Ordinary wheel or two-finger scrolling first moves through a page when it is
+taller than the viewport. Continuing past the bottom advances to the next page;
+scrolling above the top opens the previous page at its bottom. `Ctrl + wheel`
+zooms toward the pointer. Images and other formats keep their former wheel zoom.
+
+**Format-aware PDF zoom.** PDF zoom percentages now use the conventional 96 dpi
+screen scale rather than the internal render DPI. Portrait A4 opens at 125%,
+while A-series, Letter, Legal, Tabloid, landscape, and custom MediaBox sizes are
+detected and scaled to a consistent reading width. Very narrow windows cap
+horizontal overflow.
+
+The geometry benchmark confirms the intended format-dependent reading sizes at
+well below one microsecond per calculation (0.57 µs median on the reference
+machine). This is 0.33 µs slower than the former fit-page calculation, a
+deliberate but operationally negligible cost. See the
+[validation figure](benchmarks/results/pdf_reading_v34.png),
+[format measurements](benchmarks/results/pdf_reading_v34_formats.csv),
+[statistics](benchmarks/results/pdf_reading_v34_statistics.csv), and
+[reproducible benchmark](benchmarks/benchmark_v34.py).
 
 ---
 
@@ -318,12 +350,14 @@ Press **F1** in the app for the full list. The essentials:
 | `←` `→` | Previous / next file, or one frame in video |
 | `Space` / double click | Play / pause video |
 | `PageUp` `PageDown` | Previous / next page |
-| Wheel | Zoom towards the pointer |
+| Wheel / two-finger scroll | Scroll within a PDF, then cross page boundaries; zoom other formats |
+| `Ctrl` + wheel | Zoom towards the pointer |
 | Drag / middle-drag | Pan |
 | Double click | Toggle fit page / 100 % |
 | `S` | Snip a region to the clipboard |
 | `Ctrl+C` | Copy the whole page or current video frame |
 | `Ctrl+Shift+V` | Copy exactly what is on screen |
+| `Ctrl+B` | Show or hide the file list |
 | `Ctrl+N` / `Ctrl+O` | New window / open folder |
 | `Ctrl+1` `Ctrl+2` `Ctrl+3` `Ctrl+4` | Images / PDFs / videos / everything |
 | `Ctrl+Shift+R` | Include subfolders / this folder only |

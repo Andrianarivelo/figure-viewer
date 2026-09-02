@@ -58,6 +58,17 @@ TOAST_MS = 2400
 MINIMAP_MAX = 190
 VIDEO_FRAME_STEP_MIN = 1
 VIDEO_FRAME_STEP_MAX = 10_000
+SIDEBAR_AUTO_HIDE_MS = 5_000
+
+# PDF zoom is expressed like a desktop reader: 100% means 96 screen pixels per
+# physical inch, independently of the higher DPI used internally to rasterise
+# text. A portrait A4 starts at 125%; wider paper is reduced automatically so
+# documents have a stable visual reading width.
+PDF_SCREEN_DPI = 96.0
+PDF_DEFAULT_ZOOM = 1.25
+PDF_A4_WIDTH_POINTS = 595.28
+PDF_MAX_VIEWPORT_WIDTH = 1.35
+PDF_WHEEL_COOLDOWN_S = 0.24
 
 #: Below this width the sidebar header has no room for the long count, and the
 #: text would run under the FILES label and off the edge.
@@ -69,6 +80,7 @@ GROUP_PREFIX = "\x00dir:"
 
 FIT_PAGE = "page"
 FIT_WIDTH = "width"
+FIT_READING = "reading"
 FIT_FREE = "free"
 
 #: Tools > Subfolder Depth. The value is the ``max_depth`` handed to
@@ -90,6 +102,22 @@ def depth_label(value: int) -> str:
         if candidate == value:
             return label
     return f"+ {value} Levels" if value > 0 else "All Levels"
+
+
+def pdf_reading_scale(page_width: int, base_dpi: float, canvas_width: int) -> float:
+    """Format-aware initial PDF scale, equivalent to 125% for portrait A4.
+
+    The target is a constant physical reading width. A3, landscape, poster,
+    and custom pages therefore start lower; A5 starts higher. On an unusually
+    narrow canvas the page may exceed the viewport, but never by more than 35%,
+    leaving it readable and still easy to pan.
+    """
+    page_width = max(1, int(page_width))
+    base_dpi = max(1.0, float(base_dpi))
+    target_pixels = PDF_A4_WIDTH_POINTS / 72.0 * PDF_SCREEN_DPI * PDF_DEFAULT_ZOOM
+    desired = target_pixels / page_width
+    viewport_limit = max(1, canvas_width - 24) * PDF_MAX_VIEWPORT_WIDTH / page_width
+    return min(max(min(desired, viewport_limit), ZOOM_MIN), ZOOM_MAX)
 
 
 def _open_in_shell(path: Path) -> None:
@@ -182,6 +210,7 @@ class ViewerWindow(tk.Toplevel):
         self._slideshow_job: Optional[str] = None
         self._resize_job: Optional[str] = None
         self._video_job: Optional[str] = None
+        self._sidebar_hide_job: Optional[str] = None
         self._photo: Optional[ImageTk.PhotoImage] = None
         self._video_photo: Optional[ImageTk.PhotoImage] = None
         self._minimap_photo: Optional[ImageTk.PhotoImage] = None
@@ -215,6 +244,7 @@ class ViewerWindow(tk.Toplevel):
         self._video_session: Optional[V.VideoSession] = None
         self._video_scrubbing = False
         self._video_last_state = ""
+        self._last_pdf_page_at = 0.0
         self._sidebar_px = max(SIDEBAR_MIN, min(SIDEBAR_MAX,
                                int(app.settings.get("sidebar_width", SIDEBAR_DEFAULT))))
         self._last_depth = int(app.settings.get("scan_depth", 0)) or D.DEPTH_UNLIMITED
@@ -231,6 +261,7 @@ class ViewerWindow(tk.Toplevel):
         self.video_position = tk.DoubleVar(value=0.0)
         self.video_time_var = tk.StringVar(value="0:00 / 0:00")
         self.video_meta_var = tk.StringVar(value="VIDEO")
+        self.pdf_page_var = tk.StringVar(value="")
 
         self.kind_filter = tk.StringVar(value=settings.get("filter", D.FILTER_ALL))
         if select is not None:
@@ -246,6 +277,8 @@ class ViewerWindow(tk.Toplevel):
         self.scan_depth = tk.IntVar(value=int(settings.get("scan_depth", 0)))
         self.auto_reload = tk.BooleanVar(value=bool(settings.get("auto_reload", True)))
         self.show_sidebar = tk.BooleanVar(value=bool(settings.get("show_sidebar", True)))
+        self.sidebar_auto_hide = tk.BooleanVar(
+            value=bool(settings.get("sidebar_auto_hide", False)))
         self.show_info = tk.BooleanVar(value=bool(settings.get("show_info", False)))
         self.show_minimap = tk.BooleanVar(value=bool(settings.get("show_minimap", True)))
         self.smooth = tk.BooleanVar(value=bool(settings.get("smooth", True)))
@@ -405,6 +438,21 @@ class ViewerWindow(tk.Toplevel):
         self.snip_button.pack(side="left", padx=(0, 8))
         bind_tooltip(self.snip_button, "Drag a rectangle to copy that region  (S)", p)
 
+        files = ttk.Checkbutton(
+            actionbar, text="Files", image=self.icons.get("files"), compound="left",
+            variable=self.show_sidebar, style="Toggle.TCheckbutton", takefocus=False,
+            command=self._sidebar_visibility_changed)
+        files.pack(side="left", padx=(0, 4))
+        self.files_button = files
+        bind_tooltip(files, "Show or hide the file list  (Ctrl+B)", p)
+
+        auto_hide = ttk.Checkbutton(
+            actionbar, text="Hide in 5s", variable=self.sidebar_auto_hide,
+            style="Toggle.TCheckbutton", takefocus=False,
+            command=self._sidebar_auto_hide_changed)
+        auto_hide.pack(side="left", padx=(0, 8))
+        bind_tooltip(auto_hide, "Automatically hide the file list after five seconds", p)
+
         auto = ttk.Checkbutton(actionbar, text="Auto reload", image=self.icons.get("auto"),
                                compound="left", variable=self.auto_reload,
                                style="Toggle.TCheckbutton", takefocus=False)
@@ -431,6 +479,7 @@ class ViewerWindow(tk.Toplevel):
         self.canvas = tk.Canvas(stage, background=p.canvas, highlightthickness=0,
                                 borderwidth=0, takefocus=True)
         self.canvas.grid(row=0, column=0, sticky="nsew")
+        self.pdf_controls = self._build_pdf_controls(stage)
         self.video_controls = self._build_video_controls(stage)
 
         self.info_panel = self._build_info_panel(body)
@@ -454,6 +503,27 @@ class ViewerWindow(tk.Toplevel):
 
         self._bind_canvas()
         self._apply_layout()
+
+    def _build_pdf_controls(self, master: tk.Misc) -> ttk.Frame:
+        """Visible page navigation shown only for multi-page PDF documents."""
+        frame = ttk.Frame(master, style="Transport.TFrame", padding=(10, 7))
+        centre = ttk.Frame(frame, style="Transport.TFrame")
+        centre.pack(anchor="center")
+        self.pdf_previous_button = toolbar_button(
+            centre, "Previous page", lambda: self.change_pdf_page(-1), self.palette,
+            "Previous PDF page  (Page Up)", style="Transport.TButton",
+            image=self.icons.get("previous"), compound="left")
+        self.pdf_previous_button.pack(side="left")
+        ttk.Label(centre, textvariable=self.pdf_page_var, style="Transport.TLabel",
+                  width=24, anchor="center").pack(side="left", padx=12)
+        self.pdf_next_button = toolbar_button(
+            centre, "Next page", lambda: self.change_pdf_page(1), self.palette,
+            "Next PDF page  (Page Down)", style="Transport.TButton",
+            image=self.icons.get("next"), compound="right")
+        self.pdf_next_button.pack(side="left")
+        frame.grid(row=1, column=0, sticky="ew")
+        frame.grid_remove()
+        return frame
 
     def _build_video_controls(self, master: tk.Misc) -> ttk.Frame:
         """Create the transport bar once and reveal it only for videos."""
@@ -583,6 +653,10 @@ class ViewerWindow(tk.Toplevel):
         toolbar_button(actions, "Open", self.open_default_app, p,
                        "Open in the default application  (Enter)",
                        image=self.icons.get("external")).grid(row=0, column=2, sticky="ew", padx=(3, 0))
+        for widget in (frame, search, holder, self.tree, actions):
+            widget.bind("<Motion>", self._sidebar_activity, add="+")
+            widget.bind("<Button>", self._sidebar_activity, add="+")
+            widget.bind("<Key>", self._sidebar_activity, add="+")
         return frame
 
     def _build_sash(self, master: tk.Misc) -> ttk.Frame:
@@ -724,7 +798,10 @@ class ViewerWindow(tk.Toplevel):
         view_menu.add_cascade(label="Transparent Background", menu=transparency)
         view_menu.add_separator()
         view_menu.add_checkbutton(label="Sidebar", accelerator="Ctrl+B", variable=self.show_sidebar,
-                                  command=self._apply_layout)
+                                  command=self._sidebar_visibility_changed)
+        view_menu.add_checkbutton(label="Auto-hide File List (5 seconds)",
+                                  variable=self.sidebar_auto_hide,
+                                  command=self._sidebar_auto_hide_changed)
         view_menu.add_checkbutton(label="Details Panel", accelerator="Ctrl+I", variable=self.show_info,
                                   command=self._apply_layout)
         view_menu.add_checkbutton(label="Overview Map", variable=self.show_minimap, command=self.redraw_now)
@@ -860,7 +937,7 @@ class ViewerWindow(tk.Toplevel):
         bind("<Control-e>", lambda e: self.reveal_in_explorer())
         bind("<Control-f>", lambda e: self.focus_search())
         bind("<Control-g>", lambda e: self.goto_page())
-        bind("<Control-b>", lambda e: (self.show_sidebar.set(not self.show_sidebar.get()), self._apply_layout()))
+        bind("<Control-b>", lambda e: self.toggle_sidebar())
         bind("<Control-i>", lambda e: (self.show_info.set(not self.show_info.get()), self._apply_layout()))
         bind("<Control-t>", lambda e: self.app.toggle_theme())
         bind("<Control-c>", self._copy_shortcut)
@@ -910,7 +987,7 @@ class ViewerWindow(tk.Toplevel):
         canvas.bind("<Configure>", self._on_canvas_configure)
         canvas.bind("<MouseWheel>", self._on_wheel)
         canvas.bind("<Shift-MouseWheel>", lambda e: self._pan_by(-e.delta * 0.6, 0))
-        canvas.bind("<Control-MouseWheel>", lambda e: self._pan_by(0, -e.delta * 0.6))
+        canvas.bind("<Control-MouseWheel>", self._on_zoom_wheel)
         canvas.bind("<ButtonPress-1>", self._on_press)
         canvas.bind("<B1-Motion>", self._on_drag)
         canvas.bind("<ButtonRelease-1>", self._on_release)
@@ -946,6 +1023,57 @@ class ViewerWindow(tk.Toplevel):
             self.info_panel.grid_remove()
         self.app.settings["show_sidebar"] = self.show_sidebar.get()
         self.app.settings["show_info"] = self.show_info.get()
+        if self.show_sidebar.get():
+            self._schedule_sidebar_hide()
+        else:
+            self._cancel_sidebar_hide()
+
+    def toggle_sidebar(self) -> None:
+        """Toggle the file list from the toolbar, menu, or Ctrl+B."""
+        self.show_sidebar.set(not self.show_sidebar.get())
+        self._sidebar_visibility_changed()
+
+    def _sidebar_visibility_changed(self) -> None:
+        self._apply_layout()
+        if self.show_sidebar.get():
+            self.toast("File list shown" +
+                       (" for 5 seconds" if self.sidebar_auto_hide.get() else ""))
+
+    def _sidebar_auto_hide_changed(self) -> None:
+        """Enable or disable the five-second transient file-list mode."""
+        enabled = self.sidebar_auto_hide.get()
+        self.app.settings["sidebar_auto_hide"] = enabled
+        # Changing the mode always reveals the list, making the result visible
+        # and ensuring disabling auto-hide restores a stable reading layout.
+        self.show_sidebar.set(True)
+        self._apply_layout()
+        self.toast("File list will hide after 5 seconds" if enabled
+                   else "File list will stay visible")
+
+    def _sidebar_activity(self, _event=None) -> None:
+        """Keep the transient list open while the user is interacting with it."""
+        self._schedule_sidebar_hide()
+
+    def _schedule_sidebar_hide(self) -> None:
+        self._cancel_sidebar_hide()
+        if self.sidebar_auto_hide.get() and self.show_sidebar.get() and not self._destroyed:
+            self._sidebar_hide_job = self.after(
+                SIDEBAR_AUTO_HIDE_MS, self._auto_hide_sidebar)
+
+    def _cancel_sidebar_hide(self) -> None:
+        if self._sidebar_hide_job:
+            try:
+                self.after_cancel(self._sidebar_hide_job)
+            except Exception:
+                pass
+            self._sidebar_hide_job = None
+
+    def _auto_hide_sidebar(self) -> None:
+        self._sidebar_hide_job = None
+        if not self.sidebar_auto_hide.get() or not self.show_sidebar.get():
+            return
+        self.show_sidebar.set(False)
+        self._apply_layout()
 
     def toggle_fullscreen(self) -> None:
         """Borderless full screen; Esc or F11 returns."""
@@ -1041,6 +1169,7 @@ class ViewerWindow(tk.Toplevel):
         self.pending_select = None
         self.entries = []
         self.canvas.delete("all")
+        self.pdf_controls.grid_remove()
         self._update_window_title()
         self._apply_filter()
         self.folder_entry.focus_set()
@@ -1091,6 +1220,7 @@ class ViewerWindow(tk.Toplevel):
         self.page = 0
         self.pending_select = select
         self.canvas.delete("all")
+        self.pdf_controls.grid_remove()
         self.app.push_recent_folder(folder)
         self.rescan()
 
@@ -1216,6 +1346,7 @@ class ViewerWindow(tk.Toplevel):
             self.current = None
             self.document = None
             self.canvas.delete("all")
+            self.pdf_controls.grid_remove()
             self._draw_empty()
             self.status_var.set(
                 f"No matching files in {self.folder}"
@@ -1426,6 +1557,7 @@ class ViewerWindow(tk.Toplevel):
             return
 
         self._stop_video_session()
+        self.pdf_controls.grid_remove()
         token = time.perf_counter()
         self._load_token = token
         dpi = self.pdf_dpi.get()
@@ -1443,13 +1575,17 @@ class ViewerWindow(tk.Toplevel):
                 self.flip_h = self.flip_v = False
                 self.flip_h_var().set(False)
                 self.flip_v_var().set(False)
-                self.fit_mode = FIT_PAGE
+                self.fit_mode = (FIT_READING if entry.path.suffix.lower() == ".pdf"
+                                 else FIT_PAGE)
             self._minimap_key = None
             self._invalidate()
             if not keep_view:
-                self.fit_page()
+                self.scale = self._fit_scale(self.fit_mode)
+                self.off_x = self.off_y = 0.0
+                self.redraw_now()
             else:
                 self.redraw_now()
+            self._sync_pdf_controls()
             self._update_status(note)
             self._update_info()
             self._prefetch_neighbours()
@@ -1458,6 +1594,7 @@ class ViewerWindow(tk.Toplevel):
             if self._destroyed:
                 return
             self.document = None
+            self.pdf_controls.grid_remove()
             self.canvas.delete("all")
             self._draw_message(str(exc))
             self.status_var.set(f"Could not open {entry.relname}: {exc}")
@@ -1472,6 +1609,7 @@ class ViewerWindow(tk.Toplevel):
                     else self.video_autoplay.get())
         self._stop_video_session()
         self.document = None
+        self.pdf_controls.grid_remove()
         self.page = 0
         self._minimap_key = None
         self._video_last_state = ""
@@ -1657,10 +1795,17 @@ class ViewerWindow(tk.Toplevel):
     def _canvas_size(self) -> tuple[int, int]:
         return max(self.canvas.winfo_width(), 1), max(self.canvas.winfo_height(), 1)
 
+    def _is_pdf(self) -> bool:
+        return (self.current is not None and self.document is not None
+                and self.current.path.suffix.lower() == ".pdf")
+
     def _fit_scale(self, mode: str) -> float:
         width, height = self.logical_size()
         cw, ch = self._canvas_size()
         margin = 16
+        if mode == FIT_READING and self._is_pdf():
+            base_dpi = float(getattr(self.document, "base_dpi", self.pdf_dpi.get()))
+            return pdf_reading_scale(width, base_dpi, cw)
         if mode == FIT_WIDTH:
             return max((cw - margin) / width, ZOOM_MIN)
         return max(min((cw - margin) / width, (ch - margin) / height), ZOOM_MIN)
@@ -1693,7 +1838,11 @@ class ViewerWindow(tk.Toplevel):
         self.redraw_now()
 
     def actual_size(self) -> None:
-        self.zoom_to(1.0)
+        if self._is_pdf():
+            base_dpi = float(getattr(self.document, "base_dpi", self.pdf_dpi.get()))
+            self.zoom_to(PDF_SCREEN_DPI / base_dpi)
+        else:
+            self.zoom_to(1.0)
 
     def zoom_by(self, factor: float, focus: Optional[tuple[float, float]] = None) -> None:
         self.zoom_to(self.scale * factor, focus)
@@ -1979,18 +2128,56 @@ class ViewerWindow(tk.Toplevel):
             if self.document is None:
                 self._draw_empty()
                 return
-            if self.fit_mode in (FIT_PAGE, FIT_WIDTH):
+            if self.fit_mode in (FIT_PAGE, FIT_WIDTH, FIT_READING):
                 self.scale = self._fit_scale(self.fit_mode)
             self._invalidate()
             self.redraw_now()
 
         self._resize_job = self.after(40, apply)
 
-    def _on_wheel(self, event) -> None:
+    def _on_zoom_wheel(self, event) -> str | None:
         if self.document is None:
-            return
+            return None
         factor = ZOOM_STEP if event.delta > 0 else 1 / ZOOM_STEP
         self.zoom_by(factor, focus=(event.x, event.y))
+        return "break"
+
+    def _on_wheel(self, event) -> str | None:
+        if self.document is None:
+            return None
+        if not self._is_pdf():
+            return self._on_zoom_wheel(event)
+
+        delta = int(event.delta)
+        if delta == 0:
+            return "break"
+
+        direction = -1 if delta > 0 else 1
+        _width, height = self.logical_size()
+        _cw, canvas_height = self._canvas_size()
+        maximum_y = max(0.0, height - canvas_height / self.scale)
+        edge_epsilon = max(1.0, 2.0 / self.scale)
+        step_pixels = min(180.0, max(24.0, abs(delta) * 0.8))
+
+        # Consume the wheel inside an oversized page first. Reaching the edge
+        # does not change page until the user continues scrolling.
+        if direction > 0 and maximum_y > edge_epsilon and self.off_y < maximum_y - edge_epsilon:
+            self.off_y = min(maximum_y, max(0.0, self.off_y) + step_pixels / self.scale)
+            self._invalidate()
+            self.redraw_now()
+            return "break"
+        if direction < 0 and maximum_y > edge_epsilon and self.off_y > edge_epsilon:
+            self.off_y = max(0.0, self.off_y - step_pixels / self.scale)
+            self._invalidate()
+            self.redraw_now()
+            return "break"
+
+        now = time.perf_counter()
+        if now - self._last_pdf_page_at < PDF_WHEEL_COOLDOWN_S:
+            return "break"
+        self._last_pdf_page_at = now
+        self.change_pdf_page(direction, land_at_end=direction < 0)
+        return "break"
 
     def _on_press(self, event) -> None:
         self.canvas.focus_set()
@@ -2521,15 +2708,54 @@ class ViewerWindow(tk.Toplevel):
         if page >= self.document.page_count:
             self.next_file()
             return
+        self._set_document_page(page)
+
+    def change_pdf_page(self, delta: int, *, land_at_end: bool = False) -> None:
+        """Move within a PDF without rolling into an adjacent file."""
+        if not self._is_pdf() or self.document is None:
+            return
+        page = min(max(self.page + delta, 0), self.document.page_count - 1)
+        if page != self.page:
+            self._set_document_page(page, land_at_end=land_at_end)
+
+    def _set_document_page(self, page: int, *, land_at_end: bool = False) -> None:
+        """Apply one validated page index and refresh all page-specific UI."""
         self.page = page
         self._minimap_key = None
         if self.fit_mode != FIT_FREE:
             self.scale = self._fit_scale(self.fit_mode)
-        self.off_x = self.off_y = 0.0
+        self.off_x = 0.0
+        if land_at_end:
+            _width, height = self.logical_size()
+            _cw, canvas_height = self._canvas_size()
+            self.off_y = max(0.0, height - canvas_height / self.scale)
+        else:
+            self.off_y = 0.0
         self._invalidate()
         self.redraw_now()
         self._update_status("Page")
         self._update_info()
+        self._sync_pdf_controls()
+
+    def _sync_pdf_controls(self) -> None:
+        """Show page buttons and detected format only for multi-page PDFs."""
+        if not self._is_pdf() or self.document is None or self.document.page_count < 2:
+            self.pdf_controls.grid_remove()
+            self.pdf_page_var.set("")
+            return
+        page_format = "PDF"
+        if hasattr(self.document, "page_format"):
+            try:
+                page_format = self.document.page_format(self.page)
+            except Exception:
+                pass
+        self.pdf_page_var.set(
+            f"Page {self.page + 1} / {self.document.page_count}  ·  {page_format}")
+        self.pdf_previous_button.state(
+            ["!disabled"] if self.page > 0 else ["disabled"])
+        self.pdf_next_button.state(
+            ["!disabled"] if self.page + 1 < self.document.page_count else ["disabled"])
+        self.pdf_controls.grid()
 
     def goto_page(self) -> None:
         if self.document is None or self.document.page_count < 2:
@@ -2540,14 +2766,7 @@ class ViewerWindow(tk.Toplevel):
             "Go to page", f"Page number (1 - {self.document.page_count}):",
             parent=self, minvalue=1, maxvalue=self.document.page_count, initialvalue=self.page + 1)
         if page:
-            self.page = page - 1
-            self._minimap_key = None
-            if self.fit_mode != FIT_FREE:
-                self.scale = self._fit_scale(self.fit_mode)
-            self.off_x = self.off_y = 0.0
-            self._invalidate()
-            self.redraw_now()
-            self._update_info()
+            self._set_document_page(page - 1)
 
     def _set_filter(self, mode: str) -> None:
         self.kind_filter.set(mode)
@@ -2801,12 +3020,21 @@ class ViewerWindow(tk.Toplevel):
                 self.page_var.set("Loading video…")
             self.zoom_var.set(snapshot.state.upper())
             return
-        self.zoom_var.set(f"{self.scale * 100:.0f}%")
+        display_scale = self.scale
+        if self._is_pdf():
+            base_dpi = float(getattr(self.document, "base_dpi", self.pdf_dpi.get()))
+            display_scale *= base_dpi / PDF_SCREEN_DPI
+        self.zoom_var.set(f"{display_scale * 100:.0f}%")
         if self.document is None:
             self.page_var.set("")
             return
         width, height = self.document.page_size(self.page)
         parts = [f"{width} x {height} px"]
+        if self._is_pdf() and hasattr(self.document, "page_format"):
+            try:
+                parts.append(self.document.page_format(self.page))
+            except Exception:
+                pass
         if self.document.page_count > 1:
             parts.insert(0, f"page {self.page + 1}/{self.document.page_count}")
         self.page_var.set("   ".join(parts))
@@ -2939,15 +3167,17 @@ class ViewerWindow(tk.Toplevel):
             ("Enter", "Open in the default application"),
             ("", ""),
             ("View", ""),
-            ("Mouse wheel", "Zoom towards the pointer"),
-            ("Shift / Ctrl + wheel", "Pan horizontally / vertically"),
+            ("Mouse wheel", "Scroll PDF content/pages; zoom other formats"),
+            ("Ctrl + wheel", "Zoom towards the pointer"),
+            ("Shift + wheel", "Pan horizontally"),
             ("Drag", "Pan   (middle-drag also works)"),
             ("Double click", "Toggle fit page / 100 %"),
             ("Ctrl+0 / Ctrl+9", "Fit page / fit width"),
             ("Ctrl+Shift+0", "Actual size"),
             ("Ctrl+[ / Ctrl+]", "Rotate left / right"),
             ("I", "Invert colours"),
-            ("Ctrl+B / Ctrl+I", "Toggle sidebar / details panel"),
+            ("Ctrl+B / Ctrl+I", "Toggle file list / details panel"),
+            ("Hide in 5s", "Automatically hide the file list after five seconds"),
             ("Ctrl+T", "Toggle dark and light theme"),
             ("F11", "Full screen"),
             ("", ""),
@@ -2959,6 +3189,10 @@ class ViewerWindow(tk.Toplevel):
             ("Ctrl+Shift+C", "Copy the last snip again"),
             ("Ctrl+Shift+P", "Copy the file path"),
             ("Ctrl+S / Ctrl+Shift+S", "Save page or video frame / save snip"),
+            ("", ""),
+            ("PDF", ""),
+            ("Page bar", "Previous / next page and detected paper format"),
+            ("Wheel", "Scroll the page, then continue into the next page"),
             ("", ""),
             ("Video", ""),
             ("Space / double click", "Play or pause"),
@@ -3003,7 +3237,7 @@ class ViewerWindow(tk.Toplevel):
         messagebox.showinfo(
             f"About {APP_NAME}",
             f"{APP_NAME} {APP_VERSION}\n\n"
-            f"A fast folder-based viewer for images, videos, and PDFs.\n\n"
+            f"A fast document and folder viewer for images, videos, and PDFs.\n\n"
             f"Python {sys.version.split()[0]}\n"
             f"Pillow {Image.__version__}\n"
             f"PDF support: {'available' if D.HAVE_FITZ else 'install pymupdf'}\n"
@@ -3012,19 +3246,28 @@ class ViewerWindow(tk.Toplevel):
             parent=self)
 
     # ---------------------------------------------------------------- close
+    def _cancel_scheduled_jobs(self) -> None:
+        """Cancel every window-owned Tk callback before its interpreter dies."""
+        names = (
+            "_watch_job", "_quality_job", "_toast_job", "_slideshow_job",
+            "_resize_job", "_video_job", "_sidebar_hide_job",
+        )
+        for name in names:
+            job = getattr(self, name, None)
+            if job:
+                try:
+                    self.after_cancel(job)
+                except Exception:
+                    pass
+                setattr(self, name, None)
+
     def close(self) -> None:
         """Persist state, cancel timers and hand back to the app."""
         if self._destroyed:
             return
         self._destroyed = True
         self._stop_video_session()
-        for job in (self._watch_job, self._quality_job, self._toast_job,
-                    self._slideshow_job, self._resize_job, self._video_job):
-            if job:
-                try:
-                    self.after_cancel(job)
-                except Exception:
-                    pass
+        self._cancel_scheduled_jobs()
         try:
             self.app.settings["geometry"] = self.geometry()
             if self.explicit_paths is None:

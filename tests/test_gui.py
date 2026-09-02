@@ -5,6 +5,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from PIL import Image
@@ -174,6 +175,87 @@ class ViewerWindowVideoTests(unittest.TestCase):
                     self.assertEqual(window.folder_var.get(), "")
                     self.assertEqual(window.entries, [])
                     self.assertTrue(window.clear_folder_button.instate(["disabled"]))
+                finally:
+                    application.quit_all()
+
+
+@unittest.skipUnless(D.HAVE_FITZ, "PyMuPDF is not installed")
+class ViewerWindowPdfTests(unittest.TestCase):
+    def test_pdf_reader_controls_wheel_zoom_and_sidebar_auto_hide(self) -> None:
+        import pymupdf
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            settings_dir = root / "settings"
+            pdf_path = root / "two-pages.pdf"
+            pdf = pymupdf.open()
+            pdf.new_page(width=595.28, height=841.89)
+            pdf.new_page(width=841.89, height=595.28)
+            pdf.save(pdf_path)
+            pdf.close()
+
+            application = None
+            with (mock.patch.object(app_module, "SETTINGS_DIR", settings_dir),
+                  mock.patch.object(app_module, "SETTINGS_PATH", settings_dir / "settings.json"),
+                  mock.patch.object(app_module, "INSTANCE_PATH", settings_dir / "instance.json"),
+                  mock.patch.dict(app_module.DEFAULT_SETTINGS, {
+                      "single_instance": False,
+                      "thumb_size": 0,
+                      "geometry": "1100x720+40+40",
+                  })):
+                try:
+                    application = app_module.App(root, pdf_path)
+                except Exception as exc:
+                    self.skipTest(f"Tk cannot open a live window in this environment: {exc}")
+                window = application.windows[0]
+                try:
+                    deadline = time.perf_counter() + 4.0
+                    while time.perf_counter() < deadline and window.document is None:
+                        application.root.update()
+                        time.sleep(0.005)
+                    application.root.update()
+                    self.assertIsNotNone(window.document)
+                    self.assertEqual(window.document.page_count, 2)
+                    self.assertEqual(window.document.page_format(0), "A4 Portrait")
+                    self.assertTrue(window.pdf_controls.winfo_ismapped())
+                    self.assertIn("A4 Portrait", window.pdf_page_var.get())
+                    displayed_zoom = window.scale * window.document.base_dpi / 96.0
+                    self.assertAlmostEqual(displayed_zoom, 1.25, delta=0.03)
+
+                    # Plain scrolling consumes the current page first, then
+                    # advances only after scrolling continues at its edge.
+                    window._on_wheel(SimpleNamespace(delta=-120, x=200, y=200))
+                    self.assertEqual(window.page, 0)
+                    self.assertGreater(window.off_y, 0)
+                    _width, height = window.logical_size()
+                    _cw, canvas_height = window._canvas_size()
+                    window.off_y = height - canvas_height / window.scale
+                    window._on_wheel(SimpleNamespace(delta=-120, x=200, y=200))
+                    self.assertEqual(window.page, 1)
+                    self.assertIn("A4 Landscape", window.pdf_page_var.get())
+
+                    # Ctrl-scrolling zooms and leaves the page index intact.
+                    before_scale = window.scale
+                    window._on_zoom_wheel(SimpleNamespace(delta=120, x=200, y=200))
+                    self.assertEqual(window.page, 1)
+                    self.assertGreater(window.scale, before_scale)
+
+                    # Scrolling upward at the top lands at the bottom of the
+                    # previous page, preserving continuous reading direction.
+                    window.off_y = 0
+                    window._last_pdf_page_at = 0
+                    window._on_wheel(SimpleNamespace(delta=120, x=200, y=200))
+                    self.assertEqual(window.page, 0)
+                    self.assertGreater(window.off_y, 0)
+
+                    window.sidebar_auto_hide.set(True)
+                    window._sidebar_auto_hide_changed()
+                    self.assertTrue(window.show_sidebar.get())
+                    window._auto_hide_sidebar()
+                    self.assertFalse(window.show_sidebar.get())
+                    window.sidebar_auto_hide.set(False)
+                    window._sidebar_auto_hide_changed()
+                    self.assertTrue(window.show_sidebar.get())
                 finally:
                     application.quit_all()
 

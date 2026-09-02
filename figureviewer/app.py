@@ -67,6 +67,10 @@ DEFAULT_SETTINGS: dict = {
     "single_instance": True,
     "auto_reload": True,
     "show_sidebar": True,
+    # Optional reading mode: reveal the file list on demand, then reclaim its
+    # width after five seconds. The delay is fixed so the toolbar wording and
+    # behavior cannot drift apart.
+    "sidebar_auto_hide": False,
     # Width of the file list, in pixels. Adjustable by dragging the handle
     # between the list and the canvas.
     "sidebar_width": SIDEBAR_DEFAULT,
@@ -405,8 +409,13 @@ class App:
         except Exception:
             pass
         for window in list(self.windows):
+            window._destroyed = True
             try:
                 window._stop_video_session()
+            except Exception:
+                pass
+            try:
+                window._cancel_scheduled_jobs()
             except Exception:
                 pass
             try:

@@ -12,7 +12,7 @@ class BrandingTests(unittest.TestCase):
 
     def test_public_identity_is_figview(self) -> None:
         self.assertEqual(APP_NAME, "FigView")
-        self.assertEqual(APP_VERSION, "3.3")
+        self.assertEqual(APP_VERSION, "3.4")
 
     def test_canonical_and_compatibility_launchers_are_present(self) -> None:
         root = Path(__file__).resolve().parent.parent

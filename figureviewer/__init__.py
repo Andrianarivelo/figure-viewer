@@ -15,7 +15,7 @@ Package layout
 __all__ = ["APP_NAME", "APP_VERSION", "VIDEO_SUFFIXES"]
 
 APP_NAME = "FigView"
-APP_VERSION = "3.3"
+APP_VERSION = "3.4"
 
 # Shared by scanning and playback. Keeping this tiny table in the package root
 # avoids an additional filesystem import on the image/PDF startup path.

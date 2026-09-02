@@ -24,6 +24,7 @@ class SettingsMigrationTests(unittest.TestCase):
         settings = self._load(None)
         self.assertEqual(settings["scan_depth"], D.DEPTH_UNLIMITED)
         self.assertEqual(settings["video_frame_step"], 10)
+        self.assertFalse(settings["sidebar_auto_hide"])
 
     def test_old_top_level_default_migrates_to_all_levels_once(self) -> None:
         settings = self._load({"scan_depth": 0})
