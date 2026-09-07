@@ -39,16 +39,14 @@
 param(
     [switch]$IncludeVector,
     [string[]]$Extensions,
-    [switch]$NoSettings
+    [switch]$NoSettings,
+    [string]$ExecutablePath = ""
 )
 
 $ErrorActionPreference = "Stop"
 
 $AppDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Script = Join-Path $AppDir "figure_viewer_app.py"
 $Icon   = Join-Path $AppDir "figure-viewer.ico"
-
-if (-not (Test-Path $Script)) { throw "Missing GUI script: $Script" }
 
 . (Join-Path $AppDir "viewer_python.ps1")
 
@@ -103,19 +101,22 @@ $TypeNames = @{
     ".m2ts" = "MPEG-2 Transport";    ".ts"   = "MPEG Transport Stream"
 }
 
-# ------------------------------------------------------------ interpreter
-$Python  = Resolve-ViewerPython
-$Pythonw = Get-WindowlessPython -Python $Python
-$Command = '"{0}" "{1}" "%1"' -f $Pythonw, $Script
+# The portable executable contains its dependencies and needs no Python install.
+$Launch = Resolve-ViewerLaunch -AppDir $AppDir -SourceScript "figure_viewer_app.py" -ExecutablePath $ExecutablePath
+$Python = $Launch.Python
+$Command = ('"{0}" {1} "%1"' -f $Launch.Target, $Launch.Arguments)
+if ($Launch.IsFrozen) { $Command = '"{0}" "%1"' -f $Launch.Target }
+# Embedded executable icons survive one-file extraction cleanup.
+if ($Launch.IsFrozen -or -not (Test-Path -LiteralPath $Icon)) { $Icon = $Launch.Target }
 
 Write-Host "FigView file-type registration"
 Write-Host "  app dir  $AppDir"
-Write-Host "  python   $Pythonw"
+Write-Host "  target   $($Launch.Target)"
 Write-Host "  types    $($Targets -join ' ')"
 Write-Host ""
 
 # PDFs need PyMuPDF; say so now rather than after the association is live.
-if ($Targets -contains ".pdf") {
+if (-not $Launch.IsFrozen -and $Targets -contains ".pdf") {
     $probe = $Python
     if ([IO.Path]::GetFileName($Python).ToLower() -eq "pythonw.exe") {
         $sibling = Join-Path (Split-Path -Parent $Python) "python.exe"
@@ -132,7 +133,7 @@ if ($Targets -contains ".pdf") {
 
 $VideoExtensions = @(".mp4", ".m4v", ".mov", ".avi", ".mkv", ".webm", ".wmv",
                      ".mpg", ".mpeg", ".mpe", ".ogv", ".mts", ".m2ts", ".ts")
-if ($Targets | Where-Object { $VideoExtensions -contains $_ }) {
+if (-not $Launch.IsFrozen -and ($Targets | Where-Object { $VideoExtensions -contains $_ })) {
     & $Python -c "import cv2" 2>$null
     if ($LASTEXITCODE -ne 0) {
         Write-Warning "OpenCV is not installed for $Python, so videos will show an install hint. Fix with:  $Python -m pip install opencv-python"

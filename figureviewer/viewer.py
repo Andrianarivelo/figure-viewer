@@ -2956,9 +2956,14 @@ class ViewerWindow(tk.Toplevel):
                 "association.", parent=self):
             return
         try:
+            command = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                       "-File", str(script), "-Extensions", ".pdf"]
+            # A one-file release extracts scripts into a temporary directory.
+            # Register the persistent executable, never that temporary location.
+            if getattr(sys, "frozen", False):
+                command.extend(["-ExecutablePath", sys.executable])
             subprocess.Popen(
-                ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
-                 "-File", str(script), "-Extensions", ".pdf"],
+                command,
                 cwd=str(self.app.app_dir),
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             self.toast(f"Registering {APP_NAME} for PDF…")

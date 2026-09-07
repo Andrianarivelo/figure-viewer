@@ -1,9 +1,7 @@
 # Create (or refresh) the Start Menu and Desktop shortcuts for FigView.
 #
-# The shortcuts point straight at pythonw.exe rather than at the .bat file, so
-# launching the app never flashes a console window. launch_figure_viewer.py is
-# used as the target script because it logs any startup failure to
-# figure_viewer_launcher.log instead of failing silently under pythonw.
+# Portable shortcuts target FigView.exe. Source checkouts use pythonw.exe and
+# launch_figure_viewer.py, which records startup failures without a console.
 #
 # IMPORTANT: shortcuts store absolute paths. Re-run this script after moving the
 # app folder, otherwise the old shortcuts point at a directory that no longer
@@ -23,10 +21,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $AppDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Launcher = Join-Path $AppDir "launch_figure_viewer.py"
 $Icon     = Join-Path $AppDir "figure-viewer.ico"
-
-if (-not (Test-Path $Launcher)) { throw "Missing launcher: $Launcher" }
 
 # Pick an interpreter that can actually run the GUI. Several Pythons are usually
 # on PATH and only some have Pillow, so each candidate is probed rather than
@@ -35,10 +30,8 @@ if (-not (Test-Path $Launcher)) { throw "Missing launcher: $Launcher" }
 # register_file_types.ps1 can never disagree about which Python to use.
 . (Join-Path $AppDir "viewer_python.ps1")
 
-$Python = Resolve-ViewerPython
-
-# Use the windowless build for the shortcut so no console flashes on launch.
-$Pythonw = Get-WindowlessPython -Python $Python
+$Launch = Resolve-ViewerLaunch -AppDir $AppDir
+if (-not (Test-Path -LiteralPath $Icon)) { $Icon = $Launch.Target }
 
 $Shell     = New-Object -ComObject WScript.Shell
 $StartMenu = Join-Path $Shell.SpecialFolders("Programs") ""
@@ -48,9 +41,9 @@ function New-ViewerShortcut {
     param([string]$Path, [string]$Arguments, [string]$Description)
 
     $link = $Shell.CreateShortcut($Path)
-    $link.TargetPath       = $Pythonw
-    $link.Arguments        = ('"{0}"{1}' -f $Launcher, $Arguments)
-    $link.WorkingDirectory = $AppDir
+    $link.TargetPath       = $Launch.Target
+    $link.Arguments        = ($Launch.Arguments + $Arguments).Trim()
+    $link.WorkingDirectory = $Launch.WorkingDirectory
     if (Test-Path $Icon) { $link.IconLocation = "$Icon,0" }
     $link.Description      = $Description
     $link.WindowStyle      = 1
@@ -60,7 +53,7 @@ function New-ViewerShortcut {
 
 Write-Host "FigView shortcuts"
 Write-Host "  app dir  $AppDir"
-Write-Host "  python   $Pythonw"
+Write-Host "  target   $($Launch.Target)"
 
 # Rename legacy links in place first, preserving any folder-specific arguments.
 foreach ($location in @($StartMenu, $Desktop)) {

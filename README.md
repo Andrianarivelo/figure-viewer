@@ -1,4 +1,4 @@
-# FigView 3.5
+# FigView 1.0.0
 
 A fast, themed viewer **and PDF workstation** for images, videos, and PDFs on
 Windows. Open one file and only that file enters the list; open more files and
@@ -6,7 +6,7 @@ they append to the same session. Folder scanning starts only when you
 explicitly choose or pass a folder. Auto reload preserves zoom, pan, playback
 position, and list position.
 
-Since 3.5, FigView also **edits PDFs**: annotations, in-place text rewriting
+FigView also **edits PDFs**: annotations, in-place text rewriting
 with reflow, page management, redaction, form filling with saved identities,
 drawn/typed/image signatures plus real certificate signing, OCR for scanned
 documents, and one-click export to Word, Excel, PowerPoint, Markdown, HTML
@@ -14,7 +14,40 @@ and text. Everything runs locally; nothing ever leaves the machine.
 
 ---
 
-## Launch
+## Windows executable release
+
+Download version 1 from the [GitHub release](https://github.com/Andrianarivelo/figure-viewer/releases/tag/v1.0.0):
+
+- **Recommended for faster startup:** extract the entire portable ZIP and run `FigView/FigView.exe`.
+  Keep its `_internal` folder beside the executable.
+- **Standalone convenience:** run `FigView-v1.0.0-windows-x64.exe` directly.
+  It unpacks dependencies on every launch. A single local release check took
+  about 19-21 seconds, versus 1-2 seconds for the portable version.
+
+Both builds include Python and the image, PDF, video, Office export, and signing
+libraries. No Python installation is required. OCR language packs are downloaded
+when requested from the app. Existing settings and file histories are preserved.
+Version 1.0.0 is the first packaged release; older README development milestones
+refer to the earlier source-only versions.
+
+For a portable desktop shortcut, run
+`powershell -ExecutionPolicy Bypass -File .\FigView\_internal\install_shortcuts.ps1`.
+Use **Tools > Set as Default PDF Reader** for Windows file associations.
+
+### Build from source
+
+On 64-bit Windows with Python 3.13, double-click `Build Release.bat` or run
+`python build_release.py`. The build creates an isolated `.venv-build`, installs
+the pinned `requirements-build.txt`, builds both executables, checks them with
+Python removed from their search path, and writes the ZIP, EXE, test reports,
+and SHA256 checksums into `release/`.
+
+The build uses [PyInstaller specification files](https://pyinstaller.org/en/stable/spec-files.html)
+and bundles resources at their [runtime paths](https://pyinstaller.org/en/stable/runtime-information.html).
+The built-in `--self-test report.json` command verifies disposable image, PDF,
+video, export, signature, and multiple-opening workflows without using your files.
+
+## Launch from source
 
 - Double-click `FigView.bat`, or the Desktop / Start Menu shortcut.
 - Pass a folder **or a file** as the first argument:

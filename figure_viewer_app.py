@@ -19,7 +19,8 @@ import traceback
 from pathlib import Path
 
 APP_DIR = Path(__file__).resolve().parent
-ERROR_LOG = APP_DIR / "figure_viewer_error.log"
+ERROR_LOG = ((Path.home() / "AppData" / "Roaming" / "FigureViewerApp")
+             if getattr(sys, "frozen", False) else APP_DIR) / "figure_viewer_error.log"
 DISPLAY_NAME = "FigView"
 
 # Make sure the package next to this file wins over anything else on sys.path.
@@ -30,6 +31,7 @@ if str(APP_DIR) not in sys.path:
 def _report(title: str, message: str) -> None:
     """Log a startup failure and show it, even without a console."""
     try:
+        ERROR_LOG.parent.mkdir(parents=True, exist_ok=True)
         ERROR_LOG.write_text(message, encoding="utf-8")
     except Exception:
         pass
@@ -46,6 +48,11 @@ def _report(title: str, message: str) -> None:
 
 
 def main() -> int:
+    if sys.argv[1:2] == ["--self-test"]:
+        from figureviewer.selftest import run
+        if len(sys.argv) != 3:
+            return 2
+        return run(Path(sys.argv[2]).absolute())
     # Explorer launches should not pay for Tk/Pillow/document imports when an
     # existing viewer can accept their selection directly.
     from figureviewer.ipc import forward_arguments, startup_claim

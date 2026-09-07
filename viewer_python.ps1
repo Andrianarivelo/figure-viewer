@@ -70,3 +70,58 @@ function Get-WindowlessPython {
     }
     return $Python
 }
+
+function Resolve-ViewerLaunch {
+    <#
+        .SYNOPSIS
+            Resolve a portable executable or the source checkout launcher.
+        .DESCRIPTION
+            Portable scripts may sit beside FigView.exe or in PyInstaller's
+            _internal resource directory. A packaged app never probes Python.
+            Arguments contains only the optional quoted source script; callers
+            append their own file or folder argument.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$AppDir,
+        [string]$SourceScript = "launch_figure_viewer.py",
+        [string]$ExecutablePath = ""
+    )
+
+    $appRoot = [IO.Path]::GetFullPath($AppDir)
+    $exe = Join-Path $appRoot "FigView.exe"
+    # One-file builds extract scripts to a temporary resource directory. The
+    # running app supplies its persistent executable for Windows registration.
+    if ($ExecutablePath) {
+        $exe = [IO.Path]::GetFullPath($ExecutablePath)
+        if ([IO.Path]::GetExtension($exe) -ine ".exe" -or
+                -not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+            throw "ExecutablePath must reference an existing .exe file: $exe"
+        }
+    }
+    if (-not $ExecutablePath -and -not (Test-Path -LiteralPath $exe -PathType Leaf) -and
+            (Split-Path $appRoot -Leaf) -eq "_internal") {
+        $exe = Join-Path (Split-Path $appRoot -Parent) "FigView.exe"
+    }
+    if (Test-Path -LiteralPath $exe -PathType Leaf) {
+        return [pscustomobject]@{
+            Target = $exe
+            Arguments = ""
+            WorkingDirectory = Split-Path $exe -Parent
+            Python = $null
+            IsFrozen = $true
+        }
+    }
+
+    $launcher = Join-Path $appRoot $SourceScript
+    if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) {
+        throw "Missing FigView.exe or source launcher: $launcher"
+    }
+    $python = Resolve-ViewerPython
+    return [pscustomobject]@{
+        Target = Get-WindowlessPython -Python $python
+        Arguments = ('"{0}"' -f $launcher)
+        WorkingDirectory = $appRoot
+        Python = $python
+        IsFrozen = $false
+    }
+}
