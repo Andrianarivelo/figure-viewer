@@ -17,6 +17,8 @@ PATH here and only some of them have the GUI's dependencies.
 from __future__ import annotations
 
 import os
+import contextlib
+import importlib
 import subprocess
 import sys
 import traceback
@@ -96,6 +98,15 @@ def _can_run_gui(exe: Path) -> bool:
     probe = _console_variant(exe)
     if not probe.is_file():
         return False
+    # The running interpreter needs no subprocess probe. Import the small hard
+    # dependencies here once; the GUI reuses them if it starts in this process.
+    if probe == _console_variant(Path(sys.executable)).resolve():
+        try:
+            importlib.import_module("PIL")
+            importlib.import_module("tkinter")
+            return True
+        except Exception:
+            return False
     try:
         done = subprocess.run(
             [str(probe), "-c", "import PIL, tkinter"],
@@ -137,12 +148,26 @@ def resolve_python(log=None) -> Path:
 def main() -> int:
     """Start the GUI with a working interpreter and log any failure."""
     try:
+        from figureviewer.ipc import forward_arguments
+        if forward_arguments(sys.argv[1:]):
+            return 0
         if not APP_SCRIPT.exists():
             raise FileNotFoundError(f"Missing GUI script: {APP_SCRIPT}")
         with LOG_PATH.open("a", encoding="utf-8") as log:
             log.write(f"\n--- launch from {APP_DIR}\n")
             python = resolve_python(log)
-            cmd = [str(python), str(APP_SCRIPT), *sys.argv[1:]]
+            if python.resolve() == Path(sys.executable).resolve():
+                # A normal pythonw shortcut already selected the right runtime.
+                # Reuse it instead of starting a second interpreter from scratch.
+                from figure_viewer_app import main as run
+                with contextlib.redirect_stdout(log), contextlib.redirect_stderr(log):
+                    return run()
+            # Preserve relative shell arguments before the child switches to
+            # APP_DIR, otherwise it would look for files beside the program.
+            arguments = [str(Path(item).expanduser().absolute())
+                         if item and not item.startswith("-") else item
+                         for item in sys.argv[1:]]
+            cmd = [str(python), str(APP_SCRIPT), *arguments]
             log.write(f"Launching: {' '.join(cmd)}\n")
             log.flush()
             subprocess.Popen(

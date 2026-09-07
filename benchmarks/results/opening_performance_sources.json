@@ -1,0 +1,41 @@
+{
+  "baseline_revision": "d2e562d4665a7f1756a55385c99abf7233622f1b",
+  "python": "3.13.13 | packaged by Anaconda, Inc. | (main, Apr 14 2026, 06:12:50) [MSC v.1942 64 bit (AMD64)]",
+  "baseline": {
+    "figureviewer\\__init__.py": "81265e12fc237fcdecf14c350b835c5af9ac2184ff2abdcf86deb27338d42e49",
+    "figureviewer\\app.py": "3b92c87ec0b5f654121e83983c8276e61953f60a5508d5ded615d86d94380a30",
+    "figureviewer\\dialogs.py": "7dc19df52f8f6292738d2e44b6dcd674d6bd2404ab550efd865f0bdd11fa7005",
+    "figureviewer\\docs.py": "b7f3d7ae650a92d94b7c619cbe7831d0f8c6604c7506c6803af2c6dcea5966f9",
+    "figureviewer\\editui.py": "3c924374d32613b7a62e3a934579c02652062b2dd39922a3ae5fc7b4ef13246f",
+    "figureviewer\\forms.py": "be1d1f4d840aecdc97f252145857d9f9683e9dedfcc0a16e8aa7e106722b7b03",
+    "figureviewer\\icons.py": "94f78f3488f31b7c4ddbcbf7bd109d4dc954853fde5ca1c2fcc34b808a313771",
+    "figureviewer\\ocr.py": "724a201ba301ca23ba3d733dd458f6179de1579e7afc30a707eb931ede9030c5",
+    "figureviewer\\pdfedit.py": "73d8f272f2b4c052790c881ab6217ce9e65519b63fa0df379fe4d811022dfc1d",
+    "figureviewer\\pdfexport.py": "380dbe841a8bb4851885d90f123a6f218e09cd5ee919d3f5af04d3c3046a00de",
+    "figureviewer\\reflow.py": "b864d6658b05526e26b578de76f73fae123408e90e99c5c163ac787f5da7fe00",
+    "figureviewer\\signing.py": "edffb4a60fde9c4c5dda5bec5fcd970c8fa2524ece1dc198cc1f5bf847c71dab",
+    "figureviewer\\theme.py": "c7df357ad9868e1ae5a659e2357f2cefa1a97c5ffa3c950bc793765acc6531f9",
+    "figureviewer\\video.py": "786e3f3ed9cadab0708a38acc4dbee864fc496583ec038f7f919c31305bf215a",
+    "figureviewer\\viewer.py": "d0e9206479bc72d4d250b0354c1e03e3b37cc0ec5198511d4a7aa046aef24e0c",
+    "figureviewer\\winclip.py": "d019827cee3d911be8c511f9d6bbecb93a2f6bc5bab79f6e2763094e563253f7"
+  },
+  "optimized": {
+    "figureviewer\\__init__.py": "63703d68fe0ce0b30d2c0ebff5f73525748c8ea7c306de5ffaaf4e87c3c56710",
+    "figureviewer\\app.py": "979a89d2b3049c34efc7b266218f7f0eef9cf2c51d88994eed0d22a1a4d55050",
+    "figureviewer\\dialogs.py": "f3da97b36266b12e39209b2461dd7fcd264e34b70b434b950824466e5997977b",
+    "figureviewer\\docs.py": "cb1561fbd67c06f436943b6f72a864df02ecd3619275c18d0ef34746f4e6f573",
+    "figureviewer\\editui.py": "47cee7b07755115c06554f44983fb46e5893ca874d5f3387daa96324d084e9ad",
+    "figureviewer\\forms.py": "423d0fac266af75aaabc1246bd4d5c36bee707f85121fdcb589301b3470bcd91",
+    "figureviewer\\icons.py": "33037a6b218dab909f8d7fb8f192c72ac559ac14ed903c161834d05514216ce4",
+    "figureviewer\\ipc.py": "341578248e1eed9443d398b9e9a532a4184e873db0d70de5c1d4c500a4cf1df1",
+    "figureviewer\\ocr.py": "4bba748bb65239352c3b51751ea187a90ec794743e45f69b192243a7e495f26a",
+    "figureviewer\\pdfedit.py": "2bf4e4a3ce87fdd5d8704ee957ab6bf7a86a5677cf43dcb9792c39a2fde8c254",
+    "figureviewer\\pdfexport.py": "b628da102f93c3566af61245ce0b23d5112d6870a157c63b363091acf5859508",
+    "figureviewer\\reflow.py": "7c03af5b2795c0026f1072ec8b6ec7f6daa0b8332a2932ad13d0c2a4f772ee9f",
+    "figureviewer\\signing.py": "829f3c62002b558e31684085c91017c51b314733ffe0943427a42590ebb3fe3a",
+    "figureviewer\\theme.py": "c7df357ad9868e1ae5a659e2357f2cefa1a97c5ffa3c950bc793765acc6531f9",
+    "figureviewer\\video.py": "01d07a918a9e890cfde8da8e3ca4dccf0deaea74497564a0b50d6ee74b891680",
+    "figureviewer\\viewer.py": "dc6401c34d862008cf7f5e9be48b3668e61277fe6f1becbf2af24c536c151cf8",
+    "figureviewer\\winclip.py": "d019827cee3d911be8c511f9d6bbecb93a2f6bc5bab79f6e2763094e563253f7"
+  }
+}

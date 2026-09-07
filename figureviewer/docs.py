@@ -23,10 +23,13 @@ an entire movie into the document cache would be both slow and wasteful:
 from __future__ import annotations
 
 import os
+import importlib
+import importlib.util
 import queue
+import stat as stat_module
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
@@ -39,18 +42,63 @@ from . import VIDEO_SUFFIXES
 # high-resolution scientific figures; raise it rather than disable it.
 Image.MAX_IMAGE_PIXELS = 512_000_000
 
-try:  # PyMuPDF is optional: the app still runs (images only) without it.
-    try:
-        import pymupdf as fitz  # type: ignore   # modern module name (>= 1.24)
-    except ImportError:
-        import fitz  # type: ignore              # legacy alias
+def _find_pdf_backend() -> bool:
+    """Check install metadata without loading PyMuPDF's native libraries."""
+    for name in ("pymupdf", "fitz"):
+        try:
+            if importlib.util.find_spec(name) is not None:
+                return True
+        except (ImportError, ValueError):
+            continue
+    return False
 
-    HAVE_FITZ = True
-    FITZ_ERROR = ""
-except Exception as exc:  # pragma: no cover - depends on the environment
-    fitz = None  # type: ignore
-    HAVE_FITZ = False
-    FITZ_ERROR = str(exc)
+
+# Availability initially means installed. If an installed native backend fails
+# to load, the first PDF request records the actual error and disables support.
+HAVE_FITZ = _find_pdf_backend()
+FITZ_ERROR = "" if HAVE_FITZ else "PyMuPDF is not installed"
+_fitz_module = None
+_fitz_lock = threading.Lock()
+
+
+def _load_fitz():
+    """Import the optional renderer once, only when a PDF operation needs it."""
+    global _fitz_module, HAVE_FITZ, FITZ_ERROR
+    if _fitz_module is not None:
+        return _fitz_module
+    with _fitz_lock:
+        if _fitz_module is not None:
+            return _fitz_module
+        if HAVE_FITZ:
+            try:
+                try:
+                    backend = importlib.import_module("pymupdf")
+                except ImportError:
+                    backend = importlib.import_module("fitz")
+                # An unrelated historical package also used the fitz name.
+                # Reject it here instead of reporting a cryptic missing method.
+                if not callable(getattr(backend, "open", None)):
+                    raise ImportError("The installed fitz module is not PyMuPDF")
+                _fitz_module = backend
+                return backend
+            except Exception as exc:
+                HAVE_FITZ = False
+                FITZ_ERROR = str(exc)
+        raise RuntimeError(
+            "PDF support requires a working PyMuPDF installation.\n\n"
+            "Install or repair it with:\n    pip install --upgrade pymupdf\n\n"
+            f"Renderer error: {FITZ_ERROR}"
+        )
+
+
+class _LazyFitz:
+    """Preserve the shared ``docs.fitz`` API without eager renderer imports."""
+
+    def __getattr__(self, name):
+        return getattr(_load_fitz(), name)
+
+
+fitz = _LazyFitz()
 
 
 RASTER_SUFFIXES = {
@@ -268,7 +316,7 @@ def entries_for_paths(paths: list[Path], *, kinds: set[str]) -> list[Entry]:
             stat = path.stat()
         except OSError:
             continue
-        if not path.is_file():
+        if not stat_module.S_ISREG(stat.st_mode):
             continue
         entries.append(Entry(path, stat.st_size, stat.st_mtime, kind))
     return entries
@@ -571,11 +619,7 @@ class VectorDocument(Document):
 
     def __init__(self, entry: Entry, data: bytes, base_dpi: float = 150.0) -> None:
         super().__init__(entry)
-        if not HAVE_FITZ:
-            raise RuntimeError(
-                "PDF support requires PyMuPDF.\n\nInstall it with:\n"
-                "    pip install pymupdf"
-            )
+        _load_fitz()
         self.base_dpi = base_dpi
         self._doc = fitz.open(stream=data, filetype=entry.path.suffix.lstrip("."))
         self.page_count = max(1, self._doc.page_count)
@@ -853,25 +897,49 @@ class Worker:
         self.poll_ms = poll_ms
         self._pool = ThreadPoolExecutor(max_workers=max_workers,
                                         thread_name_prefix="fv-worker")
+        # Speculative work must never occupy every worker needed by an open
+        # request. A single background decoder also limits peak image memory.
+        self._background_pool = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="fv-background")
         self._queue: "queue.Queue[tuple]" = queue.Queue()
+        self._background_queue: "queue.Queue[tuple]" = queue.Queue()
         self._alive = True
         self._drain_job = self.root.after(self.poll_ms, self._drain)
 
     def submit(self, job: Callable[[], object], done: Callable[[object], None],
-               failed: Optional[Callable[[BaseException], None]] = None) -> None:
-        """Run ``job`` off-thread and call ``done`` (or ``failed``) on the UI thread."""
-        if not self._alive:
-            return
+               failed: Optional[Callable[[BaseException], None]] = None, *,
+               background: bool = False,
+               valid: Optional[Callable[[], bool]] = None) -> Future:
+        """Run work off-thread and deliver its callback on the UI thread.
 
-        def run() -> None:
+        ``background`` reserves the foreground pool for user requests. ``valid``
+        skips obsolete jobs before expensive work and suppresses stale results.
+        It runs on both threads, so it must only read thread-safe Python state,
+        never Tk widgets. The returned future can cancel work still in the queue.
+        """
+        if not self._alive:
+            cancelled = Future()
+            cancelled.cancel()
+            return cancelled
+
+        results = self._background_queue if background else self._queue
+
+        def run() -> object:
             try:
+                if not self._alive or (valid is not None and not valid()):
+                    return None
                 result = job()
             except BaseException as exc:  # noqa: BLE001 - forwarded to the UI
-                self._queue.put((failed, exc, True))
+                if self._alive:
+                    results.put((failed, exc, True, valid))
+                return None
             else:
-                self._queue.put((done, result, False))
+                if self._alive:
+                    results.put((done, result, False, valid))
+                return result
 
-        self._pool.submit(run)
+        pool = self._background_pool if background else self._pool
+        return pool.submit(run)
 
     def _drain(self) -> None:
         """Deliver finished jobs; always reschedules itself.
@@ -885,13 +953,20 @@ class Worker:
         try:
             while time.perf_counter() < deadline:
                 try:
-                    callback, payload, is_error = self._queue.get_nowait()
+                    # An already-rendered thumbnail backlog must not delay a
+                    # completed foreground open request on the UI thread either.
+                    item = self._queue.get_nowait()
                 except queue.Empty:
-                    break
+                    try:
+                        item = self._background_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                callback, payload, is_error, valid = item
                 if callback is None:
                     continue
                 try:
-                    callback(payload)
+                    if self._alive and (valid is None or valid()):
+                        callback(payload)
                 except Exception:
                     traceback.print_exc()
         finally:
@@ -908,3 +983,11 @@ class Worker:
         except Exception:
             pass
         self._pool.shutdown(wait=False, cancel_futures=True)
+        self._background_pool.shutdown(wait=False, cancel_futures=True)
+        # Discard completed images and bound their lifetime after a window closes.
+        for results in (self._queue, self._background_queue):
+            while True:
+                try:
+                    results.get_nowait()
+                except queue.Empty:
+                    break

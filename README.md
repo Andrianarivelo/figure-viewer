@@ -82,6 +82,24 @@ The **File** menu keeps separate Recent Files and Recent Folders lists. The
 small `×` beside the folder path leaves folder mode and clears the active list;
 it does not erase either recent-items history.
 
+### Opening performance
+
+File batches append in one operation, select the final file, and refresh the
+recent-file menu once. Closely spaced Explorer requests are combined on the
+UI thread. Simultaneous cold file launches coordinate through an operating
+system lock, which is released automatically if the starting process crashes.
+
+Existing-window handoffs avoid GUI imports. Image startup defers the optional
+PDF renderer until the first PDF operation. Thumbnails and speculative file
+decodes use a separate background worker, leaving interactive loading workers
+available. Changing selection cancels queued stale loads and ignores outdated
+results, including errors.
+
+Reproduce the comparison with the pinned previous revision using
+`python benchmarks/benchmark_opening.py`. Generated fixtures, raw timings,
+paired statistics, measurement limitations, and PDF/PNG/SVG figures are
+documented in `benchmarks/results/opening_performance_report.md`.
+
 ### Requirements
 
 | Package | Needed for | Install |

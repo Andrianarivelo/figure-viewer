@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import secrets
 import socket
 import sys
@@ -31,6 +32,7 @@ from typing import Optional
 
 from . import APP_NAME
 from . import docs as D
+from . import ipc
 from .theme import (PALETTES, SIDEBAR_DEFAULT, Palette, apply_theme,
                     configure_fonts, configure_list_density, enable_dpi_awareness)
 
@@ -47,6 +49,8 @@ SETTINGS_SCHEMA_VERSION = 3
 #: a second launch (a double-clicked PNG, say) can hand its file over instead of
 #: starting a whole second copy of the app. See :class:`InstanceServer`.
 INSTANCE_PATH = SETTINGS_DIR / "instance.json"
+HANDOFF_POLL_MS = 40
+HANDOFF_BATCH_LIMIT = 256
 
 DEFAULT_SETTINGS: dict = {
     "settings_schema": SETTINGS_SCHEMA_VERSION,
@@ -246,8 +250,11 @@ class InstanceServer:
         self.token = secrets.token_hex(16)
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.socket.bind(("127.0.0.1", 0))
-        self.socket.listen(8)
+        self.socket.listen(128)
         self.port = self.socket.getsockname()[1]
+        self._pending: queue.Queue = queue.Queue()
+        self._closed = False
+        self._poll_job = app.root.after(HANDOFF_POLL_MS, self._drain)
         self._publish()
         self._thread = threading.Thread(target=self._serve, daemon=True)
         self._thread.start()
@@ -270,20 +277,42 @@ class InstanceServer:
             with conn:
                 try:
                     conn.settimeout(2.0)
-                    raw = conn.recv(64 * 1024).decode("utf-8", "replace")
-                    message = json.loads(raw)
+                    message = ipc.read_message(conn)
                     if message.get("token") != self.token:
                         continue
-                    paths = [Path(item) for item in message.get("paths", [])
+                    items = message.get("paths", [])
+                    if not isinstance(items, list):
+                        continue
+                    paths = [Path(item) for item in items
                              if isinstance(item, str)]
-                    conn.sendall(b'{"ok": true}')
+                    if paths:
+                        self._pending.put(paths)
+                    conn.sendall(b'{"ok": true}\n')
                 except Exception:
                     continue
+    def _drain(self) -> None:
+        """Combine Explorer launches on the UI thread without worker Tk calls."""
+        if self._closed:
+            return
+        paths: list[Path] = []
+        try:
+            for _ in range(HANDOFF_BATCH_LIMIT):
+                try:
+                    paths.extend(self._pending.get_nowait())
+                except queue.Empty:
+                    break
             if paths:
-                # Tk is not thread-safe: hop back onto the UI thread.
-                self.app.root.after(0, lambda p=paths: self.app.open_paths(p))
+                self.app.open_paths(paths)
+        finally:
+            if not self._closed:
+                self._poll_job = self.app.root.after(HANDOFF_POLL_MS, self._drain)
 
     def close(self) -> None:
+        self._closed = True
+        try:
+            self.app.root.after_cancel(self._poll_job)
+        except Exception:
+            pass
         try:
             self.socket.close()
         except Exception:
@@ -303,19 +332,7 @@ def hand_over_to_running_instance(paths: list[Path]) -> bool:
     A stale instance file - left behind by a crash - simply fails to connect,
     and the caller starts a normal instance which overwrites it.
     """
-    try:
-        stored = json.loads(INSTANCE_PATH.read_text(encoding="utf-8"))
-        port, token = int(stored["port"]), str(stored["token"])
-    except Exception:
-        return False
-    payload = json.dumps({"token": token, "paths": [str(p) for p in paths]})
-    try:
-        with socket.create_connection(("127.0.0.1", port), timeout=1.5) as conn:
-            conn.settimeout(1.5)
-            conn.sendall(payload.encode("utf-8"))
-            return b'"ok"' in conn.recv(1024)
-    except Exception:
-        return False
+    return ipc.hand_over_to_running_instance(paths, instance_path=INSTANCE_PATH)
 
 
 class App:
@@ -409,8 +426,7 @@ class App:
         self.windows.append(window)
         if explicit_paths is None:
             self.push_recent_folder(Path(folder))
-        for path in explicit_paths or []:
-            self.push_recent_file(path)
+        self.push_recent_files(explicit_paths or [])
         return window
 
     def open_paths(self, paths: list[Path]) -> None:
@@ -422,15 +438,36 @@ class App:
         to the session instead of importing every sibling from disk.
         """
         window = self.windows[-1] if self.windows else None
+        files: list[Path] = []
+
+        def flush_files() -> None:
+            """Apply one file collection, with one scan and one selection."""
+            nonlocal window
+            if not files:
+                return
+            if window is None:
+                window = self.new_window(files[-1].parent, files[-1],
+                                         explicit_paths=list(files))
+            else:
+                window.add_files(list(files))
+            files.clear()
+
         for raw in paths:
             folder, select = resolve_target(str(raw))
             if folder is None:
                 continue
+            if select is not None:
+                files.append(select)
+                continue
+            # A folder is an ordering boundary: preserve mixed file/folder
+            # requests while combining consecutive files into one operation.
+            flush_files()
             if window is None:
-                window = self.new_window(
-                    folder, select, explicit_paths=[select] if select else None)
+                window = self.new_window(folder)
             else:
-                window.reveal_path(select or folder)
+                window.reveal_path(folder)
+        flush_files()
+        if window is not None:
             self.focus_window(window)
 
     def focus_window(self, window) -> None:
@@ -517,6 +554,31 @@ class App:
 
     def push_recent_file(self, path: Path) -> None:
         self._push_recent("recent_files", path)
+
+    def push_recent_files(self, paths: list[Path]) -> None:
+        """Update a whole batch with one menu refresh and bounded path work."""
+        if not paths:
+            return
+        recent: list[str] = []
+        seen: set[str] = set()
+        # Only the last fifteen distinct files can survive in the menu.
+        for path in reversed(paths):
+            try:
+                text = str(path.expanduser().resolve())
+            except OSError:
+                text = str(path)
+            identity = os.path.normcase(text)
+            if identity not in seen:
+                recent.append(text)
+                seen.add(identity)
+            if len(recent) == 15:
+                break
+        for text in self.settings.get("recent_files", []):
+            if os.path.normcase(text) not in seen:
+                recent.append(text)
+                seen.add(os.path.normcase(text))
+        self.settings["recent_files"] = recent[:15]
+        self.broadcast_recent()
 
     def push_recent_folder(self, folder: Path) -> None:
         self._push_recent("recent_folders", folder)
@@ -665,9 +727,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         if hand_over_to_running_instance(targets):
             return 0
 
-    folder, select = resolve_target(str(targets[0]) if targets else None)
-    app = App(folder, select)
-    if len(targets) > 1:
-        app.root.after(400, lambda: app.open_paths(targets[1:]))
+    # Construct the shell once, then process the entire batch together as soon
+    # as Tk can paint it. No arbitrary startup delay or per-file rescanning.
+    app = App()
+    if targets:
+        app.root.after_idle(lambda: app.open_paths(targets))
     app.run()
     return 0

@@ -221,6 +221,8 @@ class ViewerWindow(tk.Toplevel):
         self._thumb_keys: dict[str, tuple] = {}
         self._thumb_cache: dict[tuple, Image.Image] = app.thumb_cache
         self._thumb_generation = 0
+        self._thumb_jobs = []
+        self._load_future = None
         self._displayed: list[str] = []
         self._pan_anchor: Optional[tuple[float, float, float, float]] = None
         self._snip_start: Optional[tuple[float, float]] = None
@@ -1221,7 +1223,7 @@ class ViewerWindow(tk.Toplevel):
             if identity not in known:
                 self.explicit_paths.append(path)
                 known.add(identity)
-            self.app.push_recent_file(path)
+        self.app.push_recent_files(resolved)
         target = resolved[-1]
         self.folder = target.parent
         kind = D.suffix_kind(target.suffix)
@@ -1316,6 +1318,8 @@ class ViewerWindow(tk.Toplevel):
         keep = self.current.path if (keep_selection and self.current) else self.pending_select
 
         def job():
+            if self._destroyed or sequence != self._list_seq:
+                return [], False
             if explicit_paths is not None:
                 return D.entries_for_paths(list(explicit_paths), kinds=kinds), False
             return D.scan_folder(folder, kinds=kinds, max_depth=depth,
@@ -1329,7 +1333,7 @@ class ViewerWindow(tk.Toplevel):
             if (self._destroyed
                     or (explicit_paths is None and folder != self.folder)
                     or explicit_paths != current_paths
-                    or sequence < self._list_applied):
+                    or sequence != self._list_seq):
                 return
             self._list_applied = sequence
             self.entries = entries
@@ -1345,6 +1349,8 @@ class ViewerWindow(tk.Toplevel):
 
         def failed(exc):
             self._rescan_pending = max(0, self._rescan_pending - 1)
+            if self._destroyed or sequence != self._list_seq:
+                return
             self.status_var.set(f"Scan failed: {exc}")
 
         self.app.worker.submit(job, done, failed)
@@ -1402,8 +1408,11 @@ class ViewerWindow(tk.Toplevel):
             self._suppress_select = False
             self._displayed = rows
             self._grouped = grouped
+            row_set = set(rows)
             self._thumb_photos = {iid: photo for iid, photo in self._thumb_photos.items()
-                                  if iid in set(rows)}
+                                  if iid in row_set}
+            self._thumb_keys = {iid: key for iid, key in self._thumb_keys.items()
+                                if iid in self._thumb_photos}
             for iid, photo in self._thumb_photos.items():
                 try:
                     self.tree.item(iid, image=photo)
@@ -1416,6 +1425,9 @@ class ViewerWindow(tk.Toplevel):
             self._queue_thumbnails(size)
 
         if not self.filtered:
+            self._load_token = None
+            if self._load_future is not None:
+                self._load_future.cancel()
             self._stop_video_session()
             self.current = None
             self.document = None
@@ -1580,6 +1592,15 @@ class ViewerWindow(tk.Toplevel):
         """Fill in list thumbnails: cache hits immediately, misses in background."""
         self._thumb_generation += 1
         generation = self._thumb_generation
+        # Drop queued work from the previous list instead of decoding images
+        # whose results would immediately be discarded.
+        for future in self._thumb_jobs:
+            future.cancel()
+        self._thumb_jobs = []
+
+        def valid() -> bool:
+            """Read plain Python state only; workers must never call Tk."""
+            return not self._destroyed and generation == self._thumb_generation
 
         def apply(payload) -> None:
             if generation != self._thumb_generation or self._destroyed:
@@ -1626,21 +1647,26 @@ class ViewerWindow(tk.Toplevel):
                 continue
             if entry.kind == D.KIND_VIDEO:
                 video_jobs += 1
-            self.app.worker.submit(lambda e=entry: make(e), apply, lambda _exc: None)
+            self._thumb_jobs.append(self.app.worker.submit(
+                lambda e=entry: make(e), apply, lambda _exc: None,
+                background=True, valid=valid))
 
     # ------------------------------------------------------------- loading
     def load(self, entry: D.Entry, *, keep_view: bool = False, note: str = "Loaded") -> None:
         """Load a still document asynchronously or start a video stream."""
         self.current = entry
         self._update_window_title()
+        # Every navigation, including video, invalidates an older still load.
+        token = time.perf_counter()
+        self._load_token = token
+        if self._load_future is not None:
+            self._load_future.cancel()
         if entry.kind == D.KIND_VIDEO:
             self._load_video(entry, keep_view=keep_view, note=note)
             return
 
         self._stop_video_session()
         self.pdf_controls.grid_remove()
-        token = time.perf_counter()
-        self._load_token = token
         dpi = self.pdf_dpi.get()
 
         def job():
@@ -1675,7 +1701,7 @@ class ViewerWindow(tk.Toplevel):
             self._prefetch_neighbours()
 
         def failed(exc):
-            if self._destroyed:
+            if self._destroyed or self._load_token != token:
                 return
             self.document = None
             self.pdf_controls.grid_remove()
@@ -1684,7 +1710,9 @@ class ViewerWindow(tk.Toplevel):
             self.status_var.set(f"Could not open {entry.relname}: {exc}")
             self.edit.sync_toolbar()
 
-        self.app.worker.submit(job, done, failed)
+        self._load_future = self.app.worker.submit(
+            job, done, failed,
+            valid=lambda: not self._destroyed and self._load_token == token)
 
     def _load_video(self, entry: D.Entry, *, keep_view: bool, note: str) -> None:
         """Start a streaming session without placing movie bytes in the cache."""
@@ -1845,6 +1873,7 @@ class ViewerWindow(tk.Toplevel):
         """Warm the cache with the next and previous file so navigation is instant."""
         index = self._index()
         dpi = self.pdf_dpi.get()
+        selected = self.current
         for offset in (1, -1):
             position = index + offset
             if 0 <= position < len(self.filtered):
@@ -1854,7 +1883,8 @@ class ViewerWindow(tk.Toplevel):
                 if self.app.cache.peek(entry, pdf_dpi=dpi) is None:
                     self.app.worker.submit(
                         lambda e=entry: self.app.cache.get(e, pdf_dpi=dpi),
-                        lambda _r: None, lambda _e: None)
+                        lambda _r: None, lambda _e: None, background=True,
+                        valid=lambda: not self._destroyed and self.current is selected)
 
     def reload_all(self) -> None:
         """Force a rescan and a fresh decode of the current file."""
@@ -3075,7 +3105,7 @@ class ViewerWindow(tk.Toplevel):
                 if (self._destroyed
                         or (explicit_paths is None and folder != self.folder)
                         or explicit_paths != current_paths
-                        or sequence < self._list_applied):
+                        or sequence != self._list_seq):
                     return
                 self._list_applied = sequence
                 if [e.path for e in entries] != [e.path for e in self.entries]:
@@ -3398,6 +3428,10 @@ class ViewerWindow(tk.Toplevel):
             return
         self.edit.detach_for_close()
         self._destroyed = True
+        for future in self._thumb_jobs:
+            future.cancel()
+        if self._load_future is not None:
+            self._load_future.cancel()
         self._stop_video_session()
         self._cancel_scheduled_jobs()
         try:

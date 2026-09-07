@@ -46,6 +46,22 @@ def _report(title: str, message: str) -> None:
 
 
 def main() -> int:
+    # Explorer launches should not pay for Tk/Pillow/document imports when an
+    # existing viewer can accept their selection directly.
+    from figureviewer.ipc import forward_arguments, startup_claim
+    if forward_arguments(sys.argv[1:]):
+        return 0
+    try:
+        with startup_claim(sys.argv[1:]) as forwarded:
+            return 0 if forwarded else _run_gui()
+    except Exception:
+        _report(f"{DISPLAY_NAME} - startup failed", traceback.format_exc())
+        return 3
+
+
+def _run_gui() -> int:
+    """Load dependencies only after this process wins cold-start ownership."""
+
     try:
         from PIL import Image  # noqa: F401  - fail early with a clear message
     except Exception:
