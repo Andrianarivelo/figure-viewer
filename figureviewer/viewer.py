@@ -46,6 +46,7 @@ from . import video as V
 from . import winclip
 from .editui import EditController
 from .icons import IconFactory
+from .textui import TextController
 from .theme import (LIST_FLAT, LIST_TREE, SIDEBAR_DEFAULT, SIDEBAR_MAX,
                     SIDEBAR_MIN, MenuBar, Palette, bind_tooltip,
                     configure_list_density, style_menu, toolbar_button)
@@ -312,6 +313,9 @@ class ViewerWindow(tk.Toplevel):
         # The edit controller wires itself into the toolbar, the stage rows
         # and (below) the menus, so it must exist between the two builders.
         self.edit = EditController(self)
+        # Text selection and image OCR; consulted after edit tools and snip
+        # in every gesture, before panning.
+        self.text = TextController(self)
         self.edit.build_toolbar_button(self.actionbar)
         self._build_menus()
         self._bind_keys()
@@ -772,6 +776,8 @@ class ViewerWindow(tk.Toplevel):
                               command=self.save_page_as)
         file_menu.add_command(label="Save Snip As…", accelerator="Ctrl+Shift+S", command=self.save_snip_as)
         file_menu.add_command(label="Export All Pages…", command=self.export_all_pages)
+        file_menu.add_command(label="Save Image as Searchable PDF…",
+                              command=self.text.save_searchable_pdf)
         file_menu.add_separator()
         file_menu.add_command(label="Open in Default App", accelerator="Enter", command=self.open_default_app)
         file_menu.add_command(label="Reveal in Explorer", accelerator="Ctrl+E", command=self.reveal_in_explorer)
@@ -795,6 +801,11 @@ class ViewerWindow(tk.Toplevel):
         edit_menu.add_command(label="Discard PDF Edits",
                               command=self.edit.discard_session)
         edit_menu.add_separator()
+        edit_menu.add_command(label="Copy Selected Text", accelerator="Ctrl+C",
+                              command=self.text.copy_selection)
+        edit_menu.add_command(label="Select All Text", accelerator="Ctrl+A",
+                              command=self.text.select_all)
+        edit_menu.add_separator()
         edit_menu.add_command(label="Copy Image / Video Frame", accelerator="Ctrl+C",
                               command=self.copy_image)
         edit_menu.add_command(label="Copy Visible View", accelerator="Ctrl+Shift+V", command=self.copy_view)
@@ -803,7 +814,7 @@ class ViewerWindow(tk.Toplevel):
         edit_menu.add_command(label="Copy File Path", accelerator="Ctrl+Shift+P", command=self.copy_path)
         edit_menu.add_command(label="Copy File (paste into Explorer)", command=self.copy_file_object)
         edit_menu.add_command(label="Copy Folder Path", command=self.copy_folder_path)
-        edit_menu.add_command(label="Copy Page Text (PDF)", command=self.copy_page_text)
+        edit_menu.add_command(label="Copy Page Text", command=self.copy_page_text)
         edit_menu.add_separator()
         edit_menu.add_command(label="Snip Region", accelerator="S", command=lambda: self.snip_mode.set(True) or self._snip_mode_changed())
         edit_menu.add_command(label="Find in File List", accelerator="Ctrl+F", command=self.focus_search)
@@ -896,7 +907,7 @@ class ViewerWindow(tk.Toplevel):
         tools_menu.add_command(label="Copy / Export DPI…", command=self.set_export_dpi)
         tools_menu.add_separator()
         tools_menu.add_command(label="Recognise Text (OCR)…",
-                               command=self.edit.open_ocr)
+                               command=self.text.open_ocr)
         tools_menu.add_command(label="Identity Presets…",
                                command=self.edit.open_identities)
         tools_menu.add_separator()
@@ -993,6 +1004,7 @@ class ViewerWindow(tk.Toplevel):
         bind("<Control-i>", lambda e: (self.show_info.set(not self.show_info.get()), self._apply_layout()))
         bind("<Control-t>", lambda e: self.app.toggle_theme())
         bind("<Control-c>", self._copy_shortcut)
+        bind("<Control-a>", guard(self.text.select_all))
         bind("<Control-C>", lambda e: self.copy_last_snip())
         bind("<Control-P>", lambda e: self.copy_path())
         bind("<Control-V>", lambda e: self.copy_view())
@@ -1071,6 +1083,7 @@ class ViewerWindow(tk.Toplevel):
         canvas.bind("<B2-Motion>", self._on_middle_drag)
         canvas.bind("<ButtonRelease-2>", lambda e: self._end_pan())
         canvas.bind("<Double-1>", self._on_double_click)
+        canvas.bind("<Triple-1>", self._on_triple_click)
         canvas.bind("<Button-3>", self._canvas_context_menu)
         canvas.bind("<Motion>", self._on_motion)
         canvas.bind("<Leave>", lambda e: self._set_probe(""))
@@ -1676,6 +1689,7 @@ class ViewerWindow(tk.Toplevel):
             if self._destroyed or getattr(self, "_load_token", None) != token:
                 return
             self.document = document
+            self.text.on_document_loaded()
             if not keep_view:
                 self.page = 0
                 self.rotation = 0
@@ -2163,6 +2177,7 @@ class ViewerWindow(tk.Toplevel):
         self._photo = photo
         self._draw_minimap()
         self.edit.draw_overlay()
+        self.text.draw()
 
     def _draw_empty(self) -> None:
         if self.explicit_paths is None:
@@ -2313,6 +2328,10 @@ class ViewerWindow(tk.Toplevel):
             self._snip_start = (event.x, event.y)
             self._snip_rect = None
             return
+        # A press on text starts a selection; on blank page it falls
+        # through to panning, so the reading gesture is unchanged.
+        if self.text.on_press(event):
+            return
         self._pan_anchor = (event.x, event.y, self.off_x, self.off_y)
         self.canvas.configure(cursor="fleur")
 
@@ -2321,6 +2340,8 @@ class ViewerWindow(tk.Toplevel):
             return
         if self._snip_start is not None:
             self._update_snip_overlay(event.x, event.y, shift=bool(event.state & 0x0001))
+            return
+        if self.text.on_drag(event):
             return
         if self._pan_anchor is None:
             return
@@ -2337,11 +2358,14 @@ class ViewerWindow(tk.Toplevel):
         if self._snip_start is not None:
             self._finish_snip(event.x, event.y)
             return
+        if self.text.on_release(event):
+            return
         self._end_pan()
 
     def _end_pan(self) -> None:
         self._pan_anchor = None
         self.canvas.configure(cursor="crosshair" if self.snip_mode.get() else "")
+        self.text.cursor_reset()
 
     def _on_middle_press(self, event) -> None:
         self._pan_anchor = (event.x, event.y, self.off_x, self.off_y)
@@ -2365,12 +2389,19 @@ class ViewerWindow(tk.Toplevel):
             return
         if self.edit.on_double_click(_event):
             return
+        if self.text.select_word_at(_event):
+            return
         if abs(self.scale - 1.0) < 1e-6:
             self.fit_page()
         else:
             self.actual_size()
 
+    def _on_triple_click(self, event) -> None:
+        """Triple click selects a whole line of text; inert elsewhere."""
+        self.text.select_line_at(event)
+
     def _on_motion(self, event) -> None:
+        self.text.on_motion(event)
         if self.document is None:
             self._set_probe("")
             return
@@ -2430,6 +2461,8 @@ class ViewerWindow(tk.Toplevel):
             return
         if self.edit.on_escape():
             return
+        if self.text.clear_selection():
+            return
         if self.snip_mode.get() or self._snip_start is not None:
             self._snip_start = None
             self.canvas.delete("snip")
@@ -2447,7 +2480,9 @@ class ViewerWindow(tk.Toplevel):
             self.toast("Video frames can be copied or saved, but region snipping is for still images")
             return
         self.canvas.configure(cursor="crosshair" if active else "")
+        self.text.cursor_reset()
         if active:
+            self.text.clear_selection()
             self.toast("Snip: drag a rectangle to copy it. Shift = square, Esc = cancel.")
         else:
             self.canvas.delete("snip")
@@ -2549,9 +2584,12 @@ class ViewerWindow(tk.Toplevel):
 
     # ------------------------------------------------------------- commands
     def _copy_shortcut(self, _event=None):
-        """Ctrl+C copies the image, unless a text field has focus."""
+        """Ctrl+C copies the selected text, else the image, unless a text
+        field has focus."""
         if self._typing():
             return None
+        if self.text.copy_selection():
+            return "break"
         self.copy_image()
         return "break"
 
@@ -2634,14 +2672,8 @@ class ViewerWindow(tk.Toplevel):
         self.toast("File copied - paste it into Explorer or an e-mail")
 
     def copy_page_text(self) -> None:
-        if self.document is None:
-            return
-        text = self.document.text(self.page)
-        if not text.strip():
-            self.toast("No extractable text on this page")
-            return
-        winclip.copy_text(text)
-        self.toast(f"Copied {len(text)} characters of page text")
+        """All text on the page: the PDF text layer or an image's OCR."""
+        self.text.copy_page_text()
 
     def save_page_as(self) -> None:
         """Write the current still page or video frame to a new image file."""
@@ -2857,6 +2889,7 @@ class ViewerWindow(tk.Toplevel):
     def _set_document_page(self, page: int, *, land_at_end: bool = False) -> None:
         """Apply one validated page index and refresh all page-specific UI."""
         self.edit.on_page_changed()
+        self.text.on_page_changed()
         self.page = page
         self._minimap_key = None
         if self.fit_mode != FIT_FREE:
@@ -3217,6 +3250,9 @@ class ViewerWindow(tk.Toplevel):
             ]
             if self.document is not None:
                 rows.extend(self.document.info.items())
+                ocr_words = self.text.ocr_word_count()
+                if ocr_words is not None:
+                    rows.append(("OCR text", f"{ocr_words} words recognised"))
             elif self._video_session is not None:
                 snapshot = self._video_session.snapshot()
                 rows += [
@@ -3280,6 +3316,7 @@ class ViewerWindow(tk.Toplevel):
         menu.add_separator()
         menu.add_command(label="Save Page As…", command=self.save_page_as)
         menu.add_command(label="Open in Default App", command=self.open_default_app)
+        self.text.context_items(menu, event)
         self.edit.context_items(menu, event)
         menu.tk_popup(event.x_root, event.y_root)
 
@@ -3332,10 +3369,19 @@ class ViewerWindow(tk.Toplevel):
             ("Ctrl+T", "Toggle dark and light theme"),
             ("F11", "Full screen"),
             ("", ""),
+            ("Text", ""),
+            ("Drag over text", "Select text (PDF pages, or an image after OCR)"),
+            ("Ctrl + drag", "Select a rectangular block of words"),
+            ("Shift + click", "Extend the selection to the click"),
+            ("Double / triple click", "Select a word / a whole line"),
+            ("Ctrl+A", "Select all text on the page"),
+            ("Esc", "Clear the selection"),
+            ("Tools > Recognise Text", "OCR a scan or an image; images gain a text layer"),
+            ("", ""),
             ("Copy and snip", ""),
             ("S", "Snip mode: drag a rectangle to copy it"),
             ("Shift while dragging", "Constrain the snip to a square"),
-            ("Ctrl+C", "Copy the whole page"),
+            ("Ctrl+C", "Copy the selected text, else the whole page"),
             ("Ctrl+Shift+V", "Copy exactly what is on screen"),
             ("Ctrl+Shift+C", "Copy the last snip again"),
             ("Ctrl+Shift+P", "Copy the file path"),

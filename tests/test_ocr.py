@@ -532,6 +532,106 @@ class OcrEngineTests(unittest.TestCase):
         text = self._norm(session.page_text(0))
         self.assertLess(O.cer(self._norm(self.reference), text), 0.05)
 
+    # -- image OCR ---------------------------------------------------------
+    def _fixture_image(self, dpi: int = 300):
+        """The scan page rendered to a PIL image at ``dpi``, plus the
+        ground-truth word boxes scaled into that image's pixel frame."""
+        from PIL import Image
+
+        document = _load(self.scan_pdf)
+        self.addCleanup(document.close)
+        fitz = D.fitz
+        with document._lock:
+            pix = document._page(0).get_pixmap(
+                matrix=fitz.Matrix(dpi / 72.0, dpi / 72.0), alpha=False)
+            image = Image.frombytes("RGB", (pix.width, pix.height),
+                                    bytes(pix.samples))
+        factor = dpi / 72.0
+        boxes = [(x0 * factor, y0 * factor, x1 * factor, y1 * factor, text)
+                 for x0, y0, x1, y1, text, *_ in self.native_words]
+        return image, boxes
+
+    def test_image_ocr_recovers_text_and_pixel_boxes(self) -> None:
+        image, boxes = self._fixture_image(300)
+        words = O.image_ocr(image, lang="eng", variant="fast",
+                            preprocess_on=True, tessdata_dir=self.tessdata,
+                            dpi=(300, 300))
+        hypothesis = self._norm(" ".join(w.text for w in words))
+        self.assertLess(O.cer(self._norm(self.reference), hypothesis), 0.05)
+        for x0, y0, x1, y1, text in boxes:
+            best = max((_iou((x0, y0, x1, y1), w.rect_px)
+                        for w in words if w.text == text), default=0.0)
+            self.assertGreater(best, 0.5, f"word {text!r} box not recovered")
+        # Reading order survives: the layout indices group the three lines.
+        self.assertEqual(len({(w.block, w.line) for w in words}), 3)
+        self.assertTrue(all(w.line >= 0 for w in words))
+
+    def test_image_ocr_without_preprocessing_and_without_dpi(self) -> None:
+        image, _boxes = self._fixture_image(300)
+        image.info.pop("dpi", None)
+        words = O.image_ocr(image, lang="eng", variant="fast",
+                            preprocess_on=False, tessdata_dir=self.tessdata)
+        hypothesis = self._norm(" ".join(w.text for w in words))
+        self.assertLess(O.cer(self._norm(self.reference), hypothesis), 0.05)
+
+    def test_page_ocr_words_carry_layout_indices(self) -> None:
+        document = _load(self.scan_pdf)
+        self.addCleanup(document.close)
+        words = O.page_ocr(document, 0, lang="eng", variant="fast",
+                           preprocess_on=True, dpi=300,
+                           tessdata_dir=self.tessdata)
+        self.assertEqual(len({(w.block, w.line) for w in words}), 3)
+
+    def test_searchable_pdf_keeps_pixels_and_adds_text(self) -> None:
+        from PIL import Image, ImageChops
+
+        image, _boxes = self._fixture_image(300)
+        words = O.image_ocr(image, lang="eng", variant="fast",
+                            preprocess_on=True, tessdata_dir=self.tessdata,
+                            dpi=(300, 300))
+        data = O.searchable_pdf_from_image(image, words, dpi=300)
+        fitz = D.fitz
+        doc = fitz.open(stream=data, filetype="pdf")
+        self.addCleanup(doc.close)
+        self.assertEqual(doc.page_count, 1)
+        page = doc[0]
+        self.assertAlmostEqual(page.rect.width, image.width * 72 / 300, places=3)
+        text = self._norm(page.get_text("text"))
+        self.assertLess(O.cer(self._norm(self.reference), text), 0.05)
+        self.assertTrue(page.search_for("quick"), "text must be searchable")
+        # Invisible overlay: rendering the PDF at the image's resolution
+        # gives the picture back, pixel for pixel.
+        pix = page.get_pixmap(matrix=fitz.Matrix(300 / 72.0, 300 / 72.0),
+                              alpha=False)
+        rendered = Image.frombytes("RGB", (pix.width, pix.height),
+                                   bytes(pix.samples))
+        self.assertEqual(rendered.size, image.size)
+        diff = ImageChops.difference(rendered, image).getbbox()
+        self.assertIsNone(diff, "the invisible text layer changed pixels")
+
+
+class ImageDpiPolicyTests(unittest.TestCase):
+    def test_declared_resolution_is_trusted_within_bounds(self) -> None:
+        self.assertEqual(O.image_ocr_dpi((800, 600), (300, 300)), (300.0, 300.0))
+        self.assertEqual(O.image_ocr_dpi((800, 600), (72, 72)), (72.0, 300.0))
+        self.assertEqual(O.image_ocr_dpi((800, 600), (600, 600)), (600.0, 600.0))
+
+    def test_missing_or_absurd_metadata_assumes_a_screen_capture(self) -> None:
+        self.assertEqual(O.image_ocr_dpi((800, 600), None),
+                         (O.ASSUMED_IMAGE_DPI, 300.0))
+        self.assertEqual(O.image_ocr_dpi((800, 600), (1, 1)),
+                         (O.ASSUMED_IMAGE_DPI, 300.0))
+        self.assertEqual(O.image_ocr_dpi((800, 600), ("x",)),
+                         (O.ASSUMED_IMAGE_DPI, 300.0))
+
+    def test_upscale_is_capped_for_large_images(self) -> None:
+        source, target = O.image_ocr_dpi((8000, 6000), None)
+        self.assertEqual(source, O.ASSUMED_IMAGE_DPI)
+        self.assertEqual(target, source)       # never below the source
+        source, target = O.image_ocr_dpi((3000, 2000), None)
+        self.assertAlmostEqual(target, source * O.OCR_MAX_SIDE_PX / 3000)
+        self.assertLessEqual(3000 * target / source, O.OCR_MAX_SIDE_PX + 1e-6)
+
 
 if __name__ == "__main__":
     unittest.main()

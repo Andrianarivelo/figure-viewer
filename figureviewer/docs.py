@@ -511,6 +511,11 @@ class Document:
         """Extracted page text, empty for raster images."""
         return ""
 
+    def words(self, page: int) -> list[tuple]:
+        """Word boxes ``(x0, y0, x1, y1, text, block, line, word_no)`` in
+        source pixels; empty for formats without a text layer."""
+        return []
+
     def close(self) -> None:
         """Release any native resources."""
 
@@ -754,6 +759,22 @@ class VectorDocument(Document):
                 return self._page(page).get_text("text")
         except Exception:
             return ""
+
+    def words(self, page: int) -> list[tuple]:
+        """Word boxes in source pixels (``points * base_dpi / 72``).
+
+        The textpage is created and consumed inside the lock, on the one page
+        proxy that produced it; only plain tuples leave the lock scope.
+        """
+        try:
+            with self._lock:
+                raw = self._page(page).get_text("words")
+        except Exception:
+            return []
+        factor = self.base_dpi / 72.0
+        return [(x0 * factor, y0 * factor, x1 * factor, y1 * factor,
+                 str(text), int(block), int(line), int(word_no))
+                for x0, y0, x1, y1, text, block, line, word_no in raw]
 
     def close(self) -> None:
         try:

@@ -9,8 +9,9 @@ position, and list position.
 FigView also **edits PDFs**: annotations, in-place text rewriting
 with reflow, page management, redaction, form filling with saved identities,
 drawn/typed/image signatures plus real certificate signing, OCR for scanned
-documents, and one-click export to Word, Excel, PowerPoint, Markdown, HTML
-and text. Everything runs locally; nothing ever leaves the machine.
+documents and plain images, drag-to-select text copying, and one-click export
+to Word, Excel, PowerPoint, Markdown, HTML and text. Everything runs locally;
+nothing ever leaves the machine.
 
 ---
 
@@ -199,6 +200,25 @@ meaningful signing, **Certify with Certificate** produces a PAdES digital
 signature through pyHanko, with a locally generated PKCS#12 certificate if
 you have none; passphrases are asked per use and never stored. Acrobat Reader
 cannot create self-managed local certificates without an Adobe account.
+
+**Select and copy text.** Drag over the text of any PDF page to select it,
+word by word in reading order, exactly as in a desktop reader: dragging past
+the end of a line takes the whole line, `Ctrl`+drag selects a rectangular
+block (tables, columns), double and triple click select a word or a line,
+`Shift`+click extends, `Ctrl+A` selects the page and `Esc` clears. `Ctrl+C`
+copies the selection as text and falls back to the image copy when nothing
+is selected, so the old shortcut keeps working. Dragging on blank page area
+still pans. Selections live in page coordinates, so rotating or flipping the
+view keeps them.
+
+**OCR images too.** `Tools > Recognise Text` on a PNG, JPEG, TIFF or any other
+picture reads its text with the same engine and clean-up pass; the result is a
+selectable text layer on top of the image (same gestures, `Edit > Copy Page
+Text` for everything at once), and `File > Save Image as Searchable PDF`
+wraps the untouched picture and an invisible text layer into a one-page PDF
+that any reader can search. Declared image resolution is honoured; images
+without one are treated as 96 dpi screen captures and upsampled for
+recognition, with the working bitmap capped at 4500 px on its long side.
 
 **OCR scanned documents.** `Tools > Recognise Text` downloads a Tesseract
 language pack on request (20 languages, fast or best variants) and overlays an
@@ -428,7 +448,8 @@ it to a file. For PDFs the crop is re-rasterised at the export DPI (default
 ### Images or PDFs, one click apart
 A segmented switch in the toolbar - **Images | PDF | All** (`Ctrl+1/2/3`) -
 filters what the folder shows. PDFs get page navigation (`PageUp`/`PageDown`,
-`Ctrl+G`), text extraction (`Edit > Copy Page Text`) and per-page export.
+`Ctrl+G`), text selection by dragging, text extraction (`Edit > Copy Page
+Text`) and per-page export.
 Multi-page TIFFs and animated GIFs use the same page controls.
 
 ### File menu and multiple windows
@@ -536,6 +557,8 @@ figureviewer/
     ocr.py                 integrated-Tesseract OCR, clean-up, language packs
     pdfexport.py           Word / Excel / PowerPoint / Markdown / HTML / text
     editui.py              the edit-mode controller wired into the viewer
+    textlayer.py           selectable text layer: words, carets, ranges, ribbons
+    textui.py              text selection, image OCR and searchable PDF glue
     dialogs.py             themed dialogs: export, signatures, identities, OCR
 ```
 

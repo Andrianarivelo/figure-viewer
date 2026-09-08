@@ -573,6 +573,55 @@ class OcrWord:
     rect_pts: tuple[float, float, float, float]
     text: str
     conf: float = -1.0
+    #: Reading-order indices from the OCR layout (-1 when unknown), so a
+    #: selection layer can group words into lines without re-clustering.
+    block: int = -1
+    line: int = -1
+
+
+@dataclass(frozen=True)
+class ImageWord:
+    """One recognised word on a raster image, in image pixels."""
+
+    rect_px: tuple[float, float, float, float]
+    text: str
+    block: int = -1
+    line: int = -1
+
+
+#: Assumed resolution for images that declare none (screen captures).
+ASSUMED_IMAGE_DPI = 96.0
+#: Longest side the processed OCR bitmap may reach for a raster image.
+OCR_MAX_SIDE_PX = 4500
+
+
+def image_ocr_dpi(size: tuple[int, int],
+                  declared: Optional[Sequence[float]] = None
+                  ) -> tuple[float, float]:
+    """``(source_dpi, target_dpi)`` for OCRing a raster image.
+
+    Declared metadata between 50 and 1200 dpi is trusted; anything else
+    falls back to :data:`ASSUMED_IMAGE_DPI`. The upscale target starts at
+    :data:`TARGET_OCR_DPI` but is capped so the processed bitmap's longest
+    side stays within :data:`OCR_MAX_SIDE_PX`, and never drops below the
+    source resolution (preprocessing only ever upsamples).
+    """
+    source = None
+    if declared:
+        try:
+            value = float(declared[0])
+        except (TypeError, ValueError, IndexError):
+            value = 0.0
+        if 50.0 <= value <= 1200.0:
+            source = value
+    if source is None:
+        source = ASSUMED_IMAGE_DPI
+    longest = max(1, max(size))
+    target = max(float(TARGET_OCR_DPI), source)
+    cap = source * OCR_MAX_SIDE_PX / longest
+    if cap < target:
+        target = max(source, cap)
+    return source, target
 
 
 def _resolve_pack_dir(tessdata_dir: Path | str, lang: str,
@@ -635,14 +684,37 @@ def page_ocr(document, page: int, *, lang: str = "eng",
         size = (pix.width, pix.height)
         del pix, proxy
     rendered = Image.frombytes("RGB", size, samples)
-    processed, transform = preprocess(rendered, src_dpi=dpi,
-                                      target_dpi=max(dpi, TARGET_OCR_DPI))
+    bitmap_words = _ocr_bitmap(rendered, float(dpi), lang=lang,
+                               pack_dir=pack_dir, preprocess_on=True,
+                               target_dpi=max(dpi, TARGET_OCR_DPI))
+    to_page_pts = 72.0 / float(dpi)
+    return [OcrWord(tuple(v * to_page_pts for v in w.rect_px), w.text,
+                    block=w.block, line=w.line) for w in bitmap_words]
+
+
+def _ocr_bitmap(rendered: Image.Image, src_dpi: float, *, lang: str,
+                pack_dir: Path, preprocess_on: bool,
+                target_dpi: float) -> list[ImageWord]:
+    """Run the integrated engine on one RGB bitmap.
+
+    Word boxes come back in the bitmap's own pixel frame: OCR pdf points ->
+    processed pixels (measured against the OCR page's rect, because the
+    PNG's dpi metadata sets that rect) -> :meth:`Transform.invert_point` ->
+    original bitmap pixels. Shared by :func:`page_ocr` (which then converts
+    to page points) and :func:`image_ocr` (which keeps pixels).
+    """
+    fitz = D.fitz
+    if preprocess_on:
+        processed, transform = preprocess(rendered, src_dpi=src_dpi,
+                                          target_dpi=target_dpi)
+    else:
+        processed, transform = rendered, Transform.identity()
 
     # Two verified quirks of MuPDF 1.28's pdfocr device: it silently
     # recognises NOTHING on a grayscale pixmap (RGB works), and the PNG's dpi
     # metadata is Tesseract's resolution hint, so it must reflect the
     # effective dpi of the (possibly upscaled) processed bitmap.
-    effective_dpi = max(1, round(dpi * processed.width
+    effective_dpi = max(1, round(src_dpi * processed.width
                                  / max(rendered.width, 1)))
     buffer = io.BytesIO()
     processed.convert("RGB").save(buffer, format="PNG",
@@ -656,7 +728,7 @@ def page_ocr(document, page: int, *, lang: str = "eng",
             f"    {pack_dir}\nReason: {exc}"
         ) from exc
 
-    words: list[OcrWord] = []
+    words: list[ImageWord] = []
     ocr_doc = fitz.open(stream=ocr_pdf, filetype="pdf")
     try:
         opage = ocr_doc[0]
@@ -668,18 +740,82 @@ def page_ocr(document, page: int, *, lang: str = "eng",
         del opage
     finally:
         ocr_doc.close()
-    to_page_pts = 72.0 / float(dpi)
-    for x0, y0, x1, y1, text, *_ in raw_words:
+    for x0, y0, x1, y1, text, block, line, *_ in raw_words:
         corners = ((x0, y0), (x1, y0), (x0, y1), (x1, y1))
         mapped = []
         for cx, cy in corners:
-            ox, oy = transform.invert_point(cx * px_per_pt_x,
-                                            cy * px_per_pt_y)
-            mapped.append((ox * to_page_pts, oy * to_page_pts))
+            mapped.append(transform.invert_point(cx * px_per_pt_x,
+                                                 cy * px_per_pt_y))
         xs = [p[0] for p in mapped]
         ys = [p[1] for p in mapped]
-        words.append(OcrWord((min(xs), min(ys), max(xs), max(ys)), str(text)))
+        words.append(ImageWord((min(xs), min(ys), max(xs), max(ys)),
+                               str(text), int(block), int(line)))
     return words
+
+
+def _flatten_rgb(image: Image.Image) -> Image.Image:
+    """RGB copy with any transparency composited onto white."""
+    if image.mode == "RGB":
+        return image
+    if image.mode in ("RGBA", "LA") or "transparency" in image.info:
+        rgba = image.convert("RGBA")
+        base = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+        return Image.alpha_composite(base, rgba).convert("RGB")
+    return image.convert("RGB")
+
+
+def image_ocr(image: Image.Image, *, lang: str = "eng",
+              variant: str = "fast", preprocess_on: bool = True,
+              tessdata_dir: Path | str,
+              dpi: Optional[Sequence[float]] = None) -> list[ImageWord]:
+    """OCR a raster image; word boxes are returned in image pixels.
+
+    ``dpi`` is the image's declared resolution (``image.info["dpi"]`` when
+    omitted); :func:`image_ocr_dpi` decides the source and upscale target.
+    The image is never modified: preprocessing works on a converted copy.
+    """
+    _require_fitz()
+    pack_dir = _resolve_pack_dir(tessdata_dir, lang, variant)
+    declared = dpi if dpi is not None else image.info.get("dpi")
+    src_dpi, target_dpi = image_ocr_dpi(image.size, declared)
+    return _ocr_bitmap(_flatten_rgb(image), src_dpi, lang=lang,
+                       pack_dir=pack_dir, preprocess_on=preprocess_on,
+                       target_dpi=target_dpi)
+
+
+def searchable_pdf_from_image(image: Image.Image,
+                              words: Sequence[ImageWord], *, dpi: float,
+                              image_bytes: Optional[bytes] = None) -> bytes:
+    """One-page PDF: the picture at its physical size plus invisible text.
+
+    The page is ``pixels * 72 / dpi`` points; ``image_bytes`` (the original
+    file, when it is a single-frame format MuPDF embeds directly) avoids a
+    lossy or bloated re-encode, otherwise the frame is embedded as PNG. Words
+    use the same ``render_mode=3`` overlay as :func:`make_searchable`, so
+    the picture's pixels are untouched while search and selection work.
+    """
+    _require_fitz()
+    fitz = D.fitz
+    scale = 72.0 / max(float(dpi), 1.0)
+    doc = fitz.open()
+    try:
+        page = doc.new_page(width=image.width * scale,
+                            height=image.height * scale)
+        if image_bytes is None:
+            buffer = io.BytesIO()
+            _flatten_rgb(image).save(buffer, format="PNG")
+            image_bytes = buffer.getvalue()
+        page.insert_image(page.rect, stream=image_bytes)
+        for word in words:
+            x0, y0, x1, y1 = word.rect_px
+            _insert_invisible_word(
+                page, OcrWord((x0 * scale, y0 * scale, x1 * scale, y1 * scale),
+                              word.text))
+        # A throwaway document: garbage collection here renumbers nothing
+        # the caller still holds.
+        return doc.tobytes(garbage=3, deflate=True)
+    finally:
+        doc.close()
 
 
 # ---------------------------------------------------------------------------

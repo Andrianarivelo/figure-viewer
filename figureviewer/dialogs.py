@@ -801,17 +801,25 @@ class OcrDialog(ThemedDialog):
     """Configure and start OCR: language, variant, preprocessing, scope."""
 
     def __init__(self, parent, palette: Palette, settings: dict, pack_manager,
-                 *, page_count: int, scan_pages: int) -> None:
+                 *, page_count: int, scan_pages: int,
+                 summary: Optional[str] = None,
+                 action: str = "Make searchable",
+                 scope_labels: tuple[str, str] = ("Whole document",
+                                                  "Current page"),
+                 show_scope: bool = True) -> None:
+        """``summary``, ``action``, ``scope_labels`` and ``show_scope`` let
+        the image OCR flow reuse this dialog with its own wording."""
         super().__init__(parent, palette, "Recognise text (OCR)")
         self.pack_manager = pack_manager
         self.palette = palette
         body = self.body
         body.columnconfigure(1, weight=1)
 
-        summary = (f"{scan_pages} of {page_count} pages look like scans "
-                   "with no text layer." if scan_pages else
-                   "Every page already has a text layer; OCR would only "
-                   "re-read pages that need it.")
+        if summary is None:
+            summary = (f"{scan_pages} of {page_count} pages look like scans "
+                       "with no text layer." if scan_pages else
+                       "Every page already has a text layer; OCR would only "
+                       "re-read pages that need it.")
         ttk.Label(body, text=summary, wraplength=430).grid(
             row=0, column=0, columnspan=3, sticky="w", pady=(0, 10))
 
@@ -848,11 +856,13 @@ class OcrDialog(ThemedDialog):
         self.scope_var = tk.StringVar(value="document")
         scope = ttk.Frame(body)
         scope.grid(row=3, column=0, columnspan=3, sticky="w", pady=(8, 0))
-        ttk.Radiobutton(scope, text="Whole document", value="document",
+        ttk.Radiobutton(scope, text=scope_labels[0], value="document",
                         variable=self.scope_var, takefocus=False).pack(side="left")
-        ttk.Radiobutton(scope, text="Current page", value="page",
+        ttk.Radiobutton(scope, text=scope_labels[1], value="page",
                         variable=self.scope_var, takefocus=False).pack(
             side="left", padx=(10, 0))
+        if not show_scope:
+            scope.grid_remove()
 
         self.status = ttk.Label(body, text="", style="Muted.TLabel",
                                 wraplength=430)
@@ -860,7 +870,7 @@ class OcrDialog(ThemedDialog):
 
         row = ttk.Frame(body)
         row.grid(row=5, column=0, columnspan=3, sticky="e", pady=(12, 0))
-        ttk.Button(row, text="Make searchable", style="Accent.TButton",
+        ttk.Button(row, text=action, style="Accent.TButton",
                    command=self._accept).pack(side="left", padx=(0, 6))
         ttk.Button(row, text="Cancel", command=self.destroy).pack(side="left")
 
