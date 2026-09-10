@@ -33,6 +33,7 @@ from . import dialogs as DLG
 from . import docs as D
 from . import pdfedit as PE
 from .theme import bind_tooltip, toolbar_button
+from .reviewui import ReviewController
 
 HANDLE_PX = 5              # selection handle half-size, in canvas pixels
 HIT_SLOP_PT = 3.0          # hit-test tolerance in PDF points
@@ -120,6 +121,7 @@ class EditController:
         self._redo_button = None
         self._save_button = None
         self._props_popover: Optional[tk.Toplevel] = None
+        self.review = ReviewController(self)
 
     # ------------------------------------------------------------ helpers
     @property
@@ -222,6 +224,8 @@ class EditController:
         self._sync_form_bar()
 
     def _detach_session(self, *, close: bool) -> None:
+        self.review.close_panel()
+        self.review.cancel_mode()
         session = self.session
         self.session = None
         self.owned = False
@@ -263,6 +267,7 @@ class EditController:
                 self.thumb_strip.refresh()
             self._fields_cache = None
         self._ocr_words_cache.clear()
+        self.review.refresh()
 
     # ------------------------------------------------------------- toggle
     def toggle_mode(self) -> None:
@@ -272,6 +277,7 @@ class EditController:
             self.activate()
 
     def activate(self) -> None:
+        self.review.cancel_mode()
         if self.active:
             return
         if not self.available():
@@ -312,6 +318,7 @@ class EditController:
 
     def detach_for_close(self) -> None:
         """Window teardown: commit editors, cancel timers, release ownership."""
+        self.review.close_panel()
         self.commit_open_editor()
         if self._ink_job:
             try:
@@ -516,10 +523,33 @@ class EditController:
         lx = window.off_x + x / window.scale
         ly = window.off_y + y / window.scale
         box = window._logical_box_to_source((lx, ly, lx, ly))
+        rect = self._source_rect_to_points(box)
+        return rect[0], rect[1]
+
+    def _source_rect_to_points(self, rect):
+        """Rendered source pixels -> unrotated PDF annotation coordinates.
+
+        A PDF's intrinsic /Rotate is separate from the viewer's own rotation.
+        Text layers follow the rendered page, while PDF annotation APIs require
+        unrotated coordinates. Undoing the native rotation prevents displaced
+        highlights and comments on landscape pages.
+        """
         factor = self._factor()
-        return (box[0] / factor, box[1] / factor)
+        points = D.fitz.Rect(*(value / factor for value in rect))
+        document = self._document()
+        with document._lock:
+            page = document._page(self._page())
+            if page.rotation:
+                points = points * page.derotation_matrix
+        return tuple(points)
 
     def points_rect_to_canvas(self, rect_pts) -> tuple[float, float, float, float]:
+        # Annotation geometry is unrotated; the source image honors /Rotate.
+        document = self._document()
+        with document._lock:
+            page = document._page(self._page())
+            if page.rotation:
+                rect_pts = tuple(D.fitz.Rect(*rect_pts) * page.rotation_matrix)
         factor = self._factor()
         source = (rect_pts[0] * factor, rect_pts[1] * factor,
                   rect_pts[2] * factor, rect_pts[3] * factor)
@@ -755,7 +785,8 @@ class EditController:
             return False
         point = self.canvas_to_points(event.x, event.y)
         hit = self.session.hit_test(self._page(), point, tolerance=HIT_SLOP_PT)
-        if hit is not None and hit.kind in (PE.TYPE_FREETEXT, PE.TYPE_NOTE):
+        if hit is not None and hit.kind in (PE.TYPE_FREETEXT, PE.TYPE_NOTE,
+                                            *MARKUP_TOOLS):
             text = DLG.ask_text(self.window, self.palette, "Edit text",
                                 "Text:", hit.contents, multiline=True)
             if text is not None and text != hit.contents:
@@ -1931,9 +1962,11 @@ class EditController:
         button.pack(side="left", padx=(0, 8), after=self.window.snip_button)
         self.edit_button = button
         bind_tooltip(button, "Edit this PDF: annotate, fill, sign  (E)", p)
+        self.review.build_toolbar(actionbar)
 
     def sync_toolbar(self) -> None:
         """Show the Edit toggle only when it can work."""
+        self.review.sync()
         if not hasattr(self, "edit_button"):
             return
         if self.available():
@@ -2184,6 +2217,7 @@ class EditController:
         self._ocr_words_cache.clear()
         self._find_state = None
         self.attach_if_parked()
+        self.review.refresh()
         self._sync_form_bar()
         if self.thumb_strip is not None:
             if self.session is None:

@@ -13,6 +13,29 @@ documents and plain images, drag-to-select text copying, and one-click export
 to Word, Excel, PowerPoint, Markdown, HTML and text. Everything runs locally;
 nothing ever leaves the machine.
 
+### Text highlights and comments
+
+The source version now exposes **Highlight**, **Comment**, and **Review** beside
+Edit in the main toolbar. Select text across one or more lines, then click
+Highlight or Comment. Clicking either tool without a selection enables repeated
+drag annotations; press Escape to stop. Scanned pages require OCR first.
+
+**Review** opens a docked, searchable list covering all pages, with filters for
+comments and highlights. Select an annotation to jump to its passage, read the
+full quote, edit its comment, change its color/opacity, or delete it. Five color
+presets and opacity settings also apply to subsequent highlights. Export the
+filtered list as a UTF-8 CSV for a review report.
+
+Shortcuts: **Ctrl+Alt+H** highlights, **Ctrl+Alt+M** comments, and
+**Ctrl+Alt+R** toggles the review pane. The selection context menu offers the
+same actions. **Ctrl+Z / Ctrl+Y** undo and redo, including the entire creation of
+a highlight with its comment in one step. **Ctrl+S** or **Save PDF** writes
+standard PDF annotations to disk; changes remain unsaved until then. The quoted
+passage is stored in the annotation's Subject field and the comment in Contents.
+
+Launch with `FigView.bat` to use these source changes. The previously published
+1.0.0 executables do not include them until rebuilt.
+
 ---
 
 ## Windows executable release

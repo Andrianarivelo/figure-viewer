@@ -1005,6 +1005,9 @@ class ViewerWindow(tk.Toplevel):
         bind("<Control-t>", lambda e: self.app.toggle_theme())
         bind("<Control-c>", self._copy_shortcut)
         bind("<Control-a>", guard(self.text.select_all))
+        bind("<Control-Alt-h>", guard(self.edit.review.action))
+        bind("<Control-Alt-m>", guard(lambda: self.edit.review.action("comment")))
+        bind("<Control-Alt-r>", guard(self.edit.review.toggle_panel))
         bind("<Control-C>", lambda e: self.copy_last_snip())
         bind("<Control-P>", lambda e: self.copy_path())
         bind("<Control-V>", lambda e: self.copy_view())
@@ -2456,6 +2459,8 @@ class ViewerWindow(tk.Toplevel):
         return True
 
     def _on_escape(self, _event=None) -> None:
+        if self.edit.review.cancel_mode():
+            return
         if self.attributes("-fullscreen"):
             self.attributes("-fullscreen", False)
             return
@@ -3317,6 +3322,15 @@ class ViewerWindow(tk.Toplevel):
         menu.add_command(label="Save Page As…", command=self.save_page_as)
         menu.add_command(label="Open in Default App", command=self.open_default_app)
         self.text.context_items(menu, event)
+        if self.edit.available():
+            menu.add_separator()
+            if self.text.has_selection():
+                menu.add_command(label="Highlight selected text",
+                                 command=self.edit.review.action)
+                menu.add_command(label="Comment on selected text",
+                                 command=lambda: self.edit.review.action("comment"))
+            menu.add_command(label="Review annotations",
+                             command=self.edit.review.open_panel)
         self.edit.context_items(menu, event)
         menu.tk_popup(event.x_root, event.y_root)
 

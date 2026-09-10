@@ -128,7 +128,9 @@ class TextController:
 
     # ------------------------------------------------------ selection
     def has_selection(self) -> bool:
-        return bool(self.selected) and self.layer() is not None
+        # Reading the layer can invalidate stale indices after an edit.
+        layer = self.layer()
+        return layer is not None and bool(self.selected)
 
     def selected_text(self) -> str:
         layer = self.layer()
@@ -303,6 +305,7 @@ class TextController:
             self.window._update_status("Ready")
         elif self.selected:
             self._announce()
+            self.window.edit.review.selection_finished()
         else:
             self.window._update_status("Ready")
         return True

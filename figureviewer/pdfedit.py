@@ -94,6 +94,7 @@ class AnnotInfo:
     kind: str
     rect: tuple[float, float, float, float]   # PDF points, top-left origin
     contents: str
+    subject: str = ""
 
 
 class EditableVectorDocument(D.VectorDocument):
@@ -622,11 +623,13 @@ class EditSession:
 
     def _info(self, page: int, annot) -> AnnotInfo:
         rect = annot.rect
+        metadata = annot.info or {}
         return AnnotInfo(
             page=page, xref=annot.xref, uid=self._annot_uid(annot),
             kind=self._annot_kind(annot),
             rect=(rect.x0, rect.y0, rect.x1, rect.y1),
-            contents=(annot.info or {}).get("content", ""),
+            contents=metadata.get("content", ""),
+            subject=metadata.get("subject", ""),
         )
 
     def annots_on(self, page: int) -> list[AnnotInfo]:
@@ -648,7 +651,13 @@ class EditSession:
 
     # -- annotation mutators ----------------------------------------------
     def add_markup(self, page: int, quads: Sequence, kind: str,
-                   color: tuple[float, float, float], opacity: float) -> str:
+                   color: tuple[float, float, float], opacity: float, *,
+                   contents: str = "", subject: str = "") -> str:
+        """Create text markup and its comment as one reversible operation.
+
+        Contents and subject use standard PDF annotation metadata, so other
+        readers can display the comment and redo restores it with the markup.
+        """
         if kind not in MARKUP_KINDS:
             raise ValueError(f"unknown markup kind {kind!r}")
         uid = uuid.uuid4().hex
@@ -665,6 +674,8 @@ class EditSession:
             annot = method(quads=quads)
             annot.set_colors(stroke=color)
             annot.set_opacity(opacity)
+            if contents or subject:
+                annot.set_info(content=contents, subject=subject)
             annot.update()
             session._tag_annot(annot, uid)
 
