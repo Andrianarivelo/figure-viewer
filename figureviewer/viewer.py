@@ -84,7 +84,21 @@ GROUP_PREFIX = "\x00dir:"
 FIT_PAGE = "page"
 FIT_WIDTH = "width"
 FIT_READING = "reading"
+FIT_OPTIMAL = "optimal"
 FIT_FREE = "free"
+#: Fit modes that follow the window when it is resized.
+FIT_MODES_TRACKING = (FIT_PAGE, FIT_WIDTH, FIT_READING, FIT_OPTIMAL)
+#: View > Zoom on Open choices: setting value -> (label, PDF mode, image mode).
+OPEN_FIT_CHOICES = (
+    ("optimal", "Optimal (fill the width)", FIT_OPTIMAL, FIT_OPTIMAL),
+    ("width", "Fit width", FIT_WIDTH, FIT_WIDTH),
+    ("page", "Fit page", FIT_PAGE, FIT_PAGE),
+    ("reading", "Reading width (A4 at 125 %)", FIT_READING, FIT_PAGE),
+)
+#: Optimal zoom caps: a PDF page never opens above this displayed zoom, an
+#: image never above this multiple of its native pixels.
+PDF_OPTIMAL_MAX_ZOOM = 2.0
+IMAGE_OPTIMAL_MAX_SCALE = 2.0
 
 #: Tools > Subfolder Depth. The value is the ``max_depth`` handed to
 #: :func:`figureviewer.docs.scan_folder`: 0 is the folder itself, n descends n
@@ -105,6 +119,21 @@ def depth_label(value: int) -> str:
         if candidate == value:
             return label
     return f"+ {value} Levels" if value > 0 else "All Levels"
+
+
+def optimal_scale(page_width: int, canvas_width: int, max_scale: float,
+                  margin: int = 16) -> float:
+    """Zoom that fills the canvas width, capped at ``max_scale``.
+
+    This is what people mean by "the right size on open": a landscape scan
+    in a wide window fills it instead of sitting at a fixed reading width,
+    while a portrait page on an ultra-wide screen stops at the cap rather
+    than growing past legibility. Height is never a constraint: a page
+    taller than the viewport scrolls, as in every reader.
+    """
+    page_width = max(1, int(page_width))
+    fill = max(1, canvas_width - margin) / page_width
+    return min(max(min(fill, max_scale), ZOOM_MIN), ZOOM_MAX)
 
 
 def pdf_reading_scale(page_width: int, base_dpi: float, canvas_width: int) -> float:
@@ -297,6 +326,7 @@ class ViewerWindow(tk.Toplevel):
         self.slideshow_secs = tk.DoubleVar(value=float(settings.get("slideshow_secs", 4.0)))
         self.slideshow_on = tk.BooleanVar(value=False)
         self.snip_mode = tk.BooleanVar(value=False)
+        self.open_fit = tk.StringVar(value=str(settings.get("open_fit", "optimal")))
         self.video_loop = tk.BooleanVar(value=bool(settings.get("video_loop", False)))
         self.video_autoplay = tk.BooleanVar(value=bool(settings.get("video_autoplay", True)))
         self.video_frame_step = tk.IntVar(value=max(
@@ -433,6 +463,10 @@ class ViewerWindow(tk.Toplevel):
         toolbar_button(zoom, "", lambda: self.zoom_by(ZOOM_STEP), p,
                        "Zoom in  (Ctrl++)", style="Icon.TButton",
                        image=self.icons.get("zoom_in")).pack(side="left")
+        toolbar_button(zoom, "Auto", self.optimal_zoom, p,
+                       "Optimal zoom: fill the width  (Ctrl+Shift+9)",
+                       style="Icon.TButton",
+                       image=self.icons.get("auto_fit")).pack(side="left")
         toolbar_button(zoom, "Fit", self.fit_page, p, "Fit the whole page  (Ctrl+0)",
                        style="Icon.TButton", image=self.icons.get("fit")).pack(side="left")
         toolbar_button(zoom, "1:1", self.actual_size, p,
@@ -852,11 +886,20 @@ class ViewerWindow(tk.Toplevel):
         edit_menu.add_command(label="Find in File List", accelerator="Ctrl+F", command=self.focus_search)
 
         view_menu = self.menubar.add_menu("View", underline=0)
+        view_menu.add_command(label="Optimal Zoom", accelerator="Ctrl+Shift+9",
+                              command=self.optimal_zoom)
         view_menu.add_command(label="Fit Page", accelerator="Ctrl+0", command=self.fit_page)
         view_menu.add_command(label="Fit Width", accelerator="Ctrl+9", command=self.fit_width)
         view_menu.add_command(label="Actual Size", accelerator="Ctrl+Shift+0", command=self.actual_size)
         view_menu.add_command(label="Zoom In", accelerator="Ctrl++", command=lambda: self.zoom_by(ZOOM_STEP))
         view_menu.add_command(label="Zoom Out", accelerator="Ctrl+-", command=lambda: self.zoom_by(1 / ZOOM_STEP))
+        open_fit_menu = tk.Menu(view_menu)
+        style_menu(open_fit_menu, p)
+        for value, label, _pdf_mode, _image_mode in OPEN_FIT_CHOICES:
+            open_fit_menu.add_radiobutton(label=label, value=value,
+                                          variable=self.open_fit,
+                                          command=self._open_fit_changed)
+        view_menu.add_cascade(label="Zoom on Open", menu=open_fit_menu)
         view_menu.add_separator()
         view_menu.add_command(label="Rotate Left", accelerator="Ctrl+[", command=lambda: self.rotate(-90))
         view_menu.add_command(label="Rotate Right", accelerator="Ctrl+]", command=lambda: self.rotate(90))
@@ -1059,6 +1102,7 @@ class ViewerWindow(tk.Toplevel):
         bind("<Control-KP_Subtract>", lambda e: self.zoom_by(1 / ZOOM_STEP))
         bind("<Control-0>", lambda e: self.fit_page())
         bind("<Control-9>", lambda e: self.fit_width())
+        bind("<Control-parenleft>", lambda e: self.optimal_zoom())
         bind("<Control-parenright>", lambda e: self.actual_size())
         bind("<Control-bracketleft>", lambda e: self.rotate(-90))
         bind("<Control-bracketright>", lambda e: self.rotate(90))
@@ -1753,8 +1797,7 @@ class ViewerWindow(tk.Toplevel):
                 self.flip_h = self.flip_v = False
                 self.flip_h_var().set(False)
                 self.flip_v_var().set(False)
-                self.fit_mode = (FIT_READING if entry.path.suffix.lower() == ".pdf"
-                                 else FIT_PAGE)
+                self.fit_mode = self._open_fit_mode(entry)
             self._minimap_key = None
             self._invalidate()
             if not keep_view:
@@ -1993,6 +2036,13 @@ class ViewerWindow(tk.Toplevel):
         if mode == FIT_READING and self._is_pdf():
             base_dpi = float(getattr(self.document, "base_dpi", self.pdf_dpi.get()))
             return pdf_reading_scale(width, base_dpi, cw)
+        if mode == FIT_OPTIMAL:
+            if self._is_pdf():
+                base_dpi = float(getattr(self.document, "base_dpi", self.pdf_dpi.get()))
+                cap = PDF_OPTIMAL_MAX_ZOOM * PDF_SCREEN_DPI / base_dpi
+            else:
+                cap = IMAGE_OPTIMAL_MAX_SCALE
+            return optimal_scale(width, cw, cap, margin)
         if mode == FIT_WIDTH:
             return max((cw - margin) / width, ZOOM_MIN)
         return max(min((cw - margin) / width, (ch - margin) / height), ZOOM_MIN)
@@ -2021,6 +2071,36 @@ class ViewerWindow(tk.Toplevel):
         self.fit_mode = FIT_WIDTH
         self.scale = self._fit_scale(FIT_WIDTH)
         self.off_y = 0.0
+        self._invalidate()
+        self.redraw_now()
+
+    def optimal_zoom(self) -> None:
+        """Fill the canvas width, capped (see :func:`optimal_scale`)."""
+        if self.document is None:
+            return
+        self.fit_mode = FIT_OPTIMAL
+        self.scale = self._fit_scale(FIT_OPTIMAL)
+        self.off_y = 0.0
+        self._invalidate()
+        self.redraw_now()
+
+    def _open_fit_mode(self, entry: D.Entry) -> str:
+        """The fit mode a freshly opened file starts in (View > Zoom on Open)."""
+        choice = str(self.app.settings.get("open_fit", "optimal"))
+        is_pdf = entry.path.suffix.lower() == ".pdf"
+        for value, _label, pdf_mode, image_mode in OPEN_FIT_CHOICES:
+            if value == choice:
+                return pdf_mode if is_pdf else image_mode
+        return FIT_OPTIMAL
+
+    def _open_fit_changed(self) -> None:
+        """Persist the choice and apply it to the file on screen at once."""
+        self.app.settings["open_fit"] = self.open_fit.get()
+        if self.current is None or self.document is None:
+            return
+        self.fit_mode = self._open_fit_mode(self.current)
+        self.scale = self._fit_scale(self.fit_mode)
+        self.off_x = self.off_y = 0.0
         self._invalidate()
         self.redraw_now()
 
@@ -2317,7 +2397,7 @@ class ViewerWindow(tk.Toplevel):
             if self.document is None:
                 self._draw_empty()
                 return
-            if self.fit_mode in (FIT_PAGE, FIT_WIDTH, FIT_READING):
+            if self.fit_mode in FIT_MODES_TRACKING:
                 self.scale = self._fit_scale(self.fit_mode)
             self._invalidate()
             self.redraw_now()
@@ -3431,6 +3511,7 @@ class ViewerWindow(tk.Toplevel):
             ("Drag", "Pan   (middle-drag also works)"),
             ("Double click", "Toggle fit page / 100 %"),
             ("Ctrl+0 / Ctrl+9", "Fit page / fit width"),
+            ("Ctrl+Shift+9", "Optimal zoom: fill the width (also the default on open)"),
             ("Ctrl+Shift+0", "Actual size"),
             ("Ctrl+[ / Ctrl+]", "Rotate left / right"),
             ("I", "Invert colours"),

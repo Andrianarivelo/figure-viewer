@@ -82,6 +82,7 @@ DEFAULT_SETTINGS: dict = {
     "show_minimap": True,
     "smooth": True,
     "transparency": "white",
+    "open_fit": "optimal",
     "thumb_size": 24,
     "density": "compact",
     "pdf_dpi": 150.0,
@@ -201,6 +202,8 @@ def load_settings() -> dict:
             values[key] = DEFAULT_SETTINGS[key]
     if values["ocr_variant"] not in ("fast", "best"):
         values["ocr_variant"] = DEFAULT_SETTINGS["ocr_variant"]
+    if values.get("open_fit") not in ("optimal", "width", "page", "reading"):
+        values["open_fit"] = DEFAULT_SETTINGS["open_fit"]
     try:
         values["ocr_dpi"] = max(150, min(600, int(values["ocr_dpi"])))
     except (KeyError, TypeError, ValueError):

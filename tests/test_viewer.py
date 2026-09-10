@@ -28,5 +28,37 @@ class PdfReadingScaleTests(unittest.TestCase):
         self.assertLessEqual(1240 * scale, (500 - 24) * viewer.PDF_MAX_VIEWPORT_WIDTH)
 
 
+class OptimalScaleTests(unittest.TestCase):
+    """The 2026-09-10 report: a landscape A4 scan opened at 88 % in a 1400 px
+    canvas under the reading rule; the wanted view fills the width."""
+
+    def test_landscape_page_fills_the_canvas_width(self) -> None:
+        base_dpi = 150.0
+        landscape_px = round(841.89 * base_dpi / 72.0)          # 1754 px
+        cap = viewer.PDF_OPTIMAL_MAX_ZOOM * viewer.PDF_SCREEN_DPI / base_dpi
+        scale = viewer.optimal_scale(landscape_px, 1400, cap)
+        self.assertAlmostEqual(landscape_px * scale, 1400 - 16, delta=1.0)
+        reading = viewer.pdf_reading_scale(landscape_px, base_dpi, 1400)
+        self.assertGreater(scale, reading * 1.3, "clearly larger than reading")
+
+    def test_portrait_page_on_a_wide_screen_stops_at_the_cap(self) -> None:
+        base_dpi = 150.0
+        portrait_px = round(viewer.PDF_A4_WIDTH_POINTS * base_dpi / 72.0)
+        cap = viewer.PDF_OPTIMAL_MAX_ZOOM * viewer.PDF_SCREEN_DPI / base_dpi
+        scale = viewer.optimal_scale(portrait_px, 5000, cap)
+        self.assertAlmostEqual(scale, cap)
+        displayed = scale * base_dpi / viewer.PDF_SCREEN_DPI
+        self.assertAlmostEqual(displayed, viewer.PDF_OPTIMAL_MAX_ZOOM)
+
+    def test_small_image_is_not_blown_up_past_twice_its_pixels(self) -> None:
+        scale = viewer.optimal_scale(300, 1400, viewer.IMAGE_OPTIMAL_MAX_SCALE)
+        self.assertEqual(scale, viewer.IMAGE_OPTIMAL_MAX_SCALE)
+
+    def test_bounds_and_degenerate_widths(self) -> None:
+        self.assertGreaterEqual(viewer.optimal_scale(100000, 10, 2.0), viewer.ZOOM_MIN)
+        self.assertLessEqual(viewer.optimal_scale(1, 100000, 100.0), viewer.ZOOM_MAX)
+        self.assertGreater(viewer.optimal_scale(0, 800, 2.0), 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

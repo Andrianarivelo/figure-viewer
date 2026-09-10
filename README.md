@@ -234,6 +234,13 @@ is selected, so the old shortcut keeps working. Dragging on blank page area
 still pans. Selections live in page coordinates, so rotating or flipping the
 view keeps them.
 
+**Optimal zoom on open.** Files now open at the zoom that fills the canvas
+width (the **Auto** toolbar button or `Ctrl+Shift+9` returns to it any time):
+a landscape scan in a wide window fills it instead of sitting at a fixed
+reading width, while a portrait page on an ultra-wide screen stops at 200 %
+and an image never grows past twice its pixels. `View > Zoom on Open` keeps
+the older behaviours available: fit width, fit page, or the A4 reading width.
+
 **Index panel.** A PDF that carries bookmarks gets an **Index** panel on the
 right (toolbar button or `Ctrl+Shift+I`): the outline as a tree, a filter box,
 expand and collapse buttons, and the bookmark covering the page on screen

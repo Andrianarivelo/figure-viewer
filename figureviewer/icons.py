@@ -126,6 +126,13 @@ def _draw_icon(name: str, size: int, colour: str, accent: str) -> Image.Image:
         line(((15, 4), (20, 4), (20, 9)))
         line(((4, 15), (4, 20), (9, 20)))
         line(((20, 15), (20, 20), (15, 20)))
+    elif name == "auto_fit":
+        # Two side bars with a double-headed arrow: fill the width.
+        line(((4, 5), (4, 19)))
+        line(((20, 5), (20, 19)))
+        line(((7, 12), (17, 12)), fill=accent)
+        line(((10, 9), (7, 12), (10, 15)), fill=accent)
+        line(((14, 9), (17, 12), (14, 15)), fill=accent)
     elif name == "actual":
         rectangle((5, 5, 19, 19), radius=1.5)
         draw.ellipse((*pt(10, 10), *pt(14, 14)), fill=accent)

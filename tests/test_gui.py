@@ -202,6 +202,9 @@ class ViewerWindowPdfTests(unittest.TestCase):
                       "single_instance": False,
                       "thumb_size": 0,
                       "geometry": "1100x720+40+40",
+                      # This test pins the legacy A4 reading rule; the
+                      # default is now the width-filling optimal zoom.
+                      "open_fit": "reading",
                   })):
                 try:
                     application = app_module.App(root, pdf_path)

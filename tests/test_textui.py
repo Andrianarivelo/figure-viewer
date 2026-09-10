@@ -152,6 +152,10 @@ class PdfTextSelectionTests(_LiveTest):
                                      "quick brown fox\njumps")
                     self.assertEqual(len(window.canvas.find_withtag("textsel")), 2)
                     window.rotate(-90)
+                    application.root.update()
+                    # The optimal fit re-scales on rotation, so canvas
+                    # positions are re-derived for the gestures below.
+                    qx, qy = self._word_center(controller, layer, "quick")
 
                     # --- double click selects a word, triple click a line.
                     self.assertTrue(controller.select_word_at(self._event(qx, qy)))
