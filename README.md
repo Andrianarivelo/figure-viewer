@@ -241,6 +241,13 @@ highlighted as you read. Clicking an entry jumps to its page and lands on the
 bookmark's target point, rotated pages included. The panel appears only when
 the document has an outline and shares the right dock with the details panel.
 
+**Redaction burns content out.** Applying redactions removes the text, blanks
+the covered pixels of images (the rest of the picture survives) and drops
+vector art fully inside a mark, so nothing recoverable stays under the black
+box; the confirmation counts marks on every page, which is what Apply
+removes. Edits made to one PDF stay parked with that file when you navigate
+to another, and can never be saved over a different document.
+
 **One-click OCR copy.** The **OCR** toolbar button (`Ctrl+Shift+T`, also
 `Edit > Copy Image Text`) reads the text of the current image or scanned PDF
 page and puts all of it on the clipboard in one go; images that were already

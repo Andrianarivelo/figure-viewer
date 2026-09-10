@@ -31,6 +31,7 @@ visible to any other standards-compliant PDF tool.
 """
 from __future__ import annotations
 
+import threading
 import uuid
 import zlib
 from contextlib import contextmanager
@@ -350,7 +351,16 @@ class SnapshotCommand(Command):
             return
         self._before = zlib.compress(session.document.to_bytes())
         assert self._mutate is not None
-        self._mutate()
+        try:
+            self._mutate()
+        except BaseException:
+            # A mutation that fails half-way (second merge file broken, one
+            # page's redaction failing) must not leave a changed document
+            # that no history entry knows about: restore the before state,
+            # then let the error reach the UI.
+            session.document.swap_doc(zlib.decompress(self._before))
+            self._before = None
+            raise
         self._after = zlib.compress(session.document.to_bytes())
 
     def undo(self, session: "EditSession") -> None:
@@ -428,6 +438,12 @@ class EditSession:
         self._saved_top: Optional[Command] = None   # top of undo stack at save
         self.saved_stamp = entry.stamp
         self.on_change: list[Callable[[ChangeEvent], None]] = []
+        #: Installed by the UI: ``ui_dispatch(callable)`` runs the callable
+        #: on the Tk thread. Mutations wrapped in :meth:`checkpoint` may run
+        #: on a worker (reflow's replace-all, OCR overlays), and listeners
+        #: touch widgets, so :meth:`_fire` marshals when it is off-thread.
+        self.ui_dispatch: Optional[Callable[[Callable[[], None]], None]] = None
+        self._ui_thread = threading.current_thread()
         #: Optional OCR text provider installed by figureviewer.ocr:
         #: Callable[(document, page index), str].
         self.ocr_text_provider: Optional[Callable[[object, int], str]] = None
@@ -469,6 +485,13 @@ class EditSession:
     def _fire(self, label: str, structural: bool) -> None:
         event = ChangeEvent(label=label, dirty=self.dirty, structural=structural,
                             can_undo=self.can_undo, can_redo=self.can_redo)
+        if (self.ui_dispatch is not None
+                and threading.current_thread() is not self._ui_thread):
+            self.ui_dispatch(lambda: self._deliver(event))
+            return
+        self._deliver(event)
+
+    def _deliver(self, event: ChangeEvent) -> None:
         for listener in list(self.on_change):
             try:
                 listener(event)
@@ -498,11 +521,13 @@ class EditSession:
         ):
             dropped = history.undo.pop(0)
             history.truncated = True
-            # The save marker may point at a command that just left history.
-            # The document then can never be undone back to its saved state,
-            # so dirty must stay True until the next explicit save: point the
-            # marker at a sentinel no stack top can ever be again.
-            if dropped is self._saved_top:
+            # The save marker may point at a command that just left history,
+            # or at "nothing" for a never-saved session whose first edit just
+            # left it. Either way the document can never be undone back to
+            # its on-disk state, so dirty must stay True until the next
+            # explicit save: point the marker at a sentinel no stack top can
+            # ever be again.
+            if dropped is self._saved_top or self._saved_top is None:
                 self._saved_top = _EVICTED_SAVE_MARKER
 
     def _execute(self, command: Command) -> None:
@@ -574,8 +599,14 @@ class EditSession:
         doc.xref_set_key(annot.xref, "NM", _pdf_string(uid))
 
     def _annot_uid(self, annot) -> str:
+        """Identity of an annotation: its /NM name, else its xref.
+
+        Foreign annotations frequently carry no /NM; without the fallback
+        they all collapsed to the empty name and a delete or move resolved
+        to the first unnamed one. Xrefs stay stable for the session because
+        garbage collection only ever runs on a throwaway copy."""
         name = (annot.info or {}).get("id") or ""
-        return name
+        return name or f"xref:{annot.xref}"
 
     def _locate(self, page: int, uid: str):
         """Return ``(page_proxy, annot_or_None)`` from ONE page load.
@@ -690,9 +721,12 @@ class EditSession:
 
         def build(session: "EditSession") -> None:
             target = session._page(page)
+            # rotate follows /Rotate so the text reads upright on a page
+            # that is stored sideways.
             annot = target.add_freetext_annot(
                 D.fitz.Rect(*rect_pts), text, fontsize=fontsize,
-                fontname=fontname, text_color=color, fill_color=None, align=align)
+                fontname=fontname, text_color=color, fill_color=None,
+                align=align, rotate=target.rotation)
             annot.set_border(width=0)
             annot.update()
             session._tag_annot(annot, uid)
@@ -815,6 +849,12 @@ class EditSession:
         if annot is None:
             raise LookupError(f"annotation {uid} vanished from page {page}")
         kind = self._annot_kind(annot)
+        if kind in MARKUP_KINDS:
+            # Text markups are anchored to their quads, not to /Rect; MuPDF
+            # ignores set_rect on them, so a "move" would push a history
+            # entry that changes nothing.
+            raise ValueError("Text markups follow their text and cannot be "
+                             "moved or resized")
         fitz = D.fitz
         new_rect = fitz.Rect(*rect_pts)
         if kind in (TYPE_LINE, TYPE_ARROW, TYPE_INK):
@@ -832,6 +872,7 @@ class EditSession:
                         new_rect.y0 + (pt[1] - old_rect.y0) * sy)
 
             info = self._read_props(annot)
+            meta = dict(annot.info or {})
             if kind == TYPE_INK:
                 # annot.vertices for ink is a list of stroke point lists.
                 strokes = [[remap(p) for p in stroke] for stroke in annot.vertices]
@@ -840,8 +881,6 @@ class EditSession:
                 if info.get("stroke"):
                     fresh.set_colors(stroke=info["stroke"])
                 fresh.set_border(width=info.get("width", 1.0))
-                fresh.update()
-                self._tag_annot(fresh, uid)
             else:
                 p1, p2 = annot.vertices[0], annot.vertices[-1]
                 ends = annot.line_ends or (0, 0)
@@ -852,11 +891,30 @@ class EditSession:
                     fresh.set_colors(stroke=info["stroke"])
                 fresh.set_line_ends(*ends)
                 fresh.set_border(width=info.get("width", 1.0))
-                fresh.update()
-                self._tag_annot(fresh, uid)
+            # A recreated annotation must keep what the user cannot see in
+            # its geometry: opacity, comment, author, subject and dates.
+            self._copy_meta(fresh, info, meta)
+            fresh.update()
+            self._tag_annot(fresh, uid)
         else:
             annot.set_rect(new_rect)
             annot.update()
+
+    @staticmethod
+    def _copy_meta(fresh, props: dict, meta: dict) -> None:
+        opacity = props.get("opacity")
+        if opacity is not None and 0.0 <= float(opacity) < 1.0:
+            fresh.set_opacity(float(opacity))
+        keys = {"content": meta.get("content"), "title": meta.get("title"),
+                "subject": meta.get("subject"),
+                "creationDate": meta.get("creationDate"),
+                "modDate": meta.get("modDate")}
+        keys = {k: v for k, v in keys.items() if v}
+        if keys:
+            try:
+                fresh.set_info(**keys)
+            except Exception:
+                pass
 
     def move_annot(self, page: int, uid: str,
                    new_rect_pts: tuple[float, float, float, float]) -> None:
@@ -864,6 +922,9 @@ class EditSession:
             page_proxy, annot = self._locate(page, uid)
             if annot is None:
                 raise LookupError(f"annotation {uid} vanished from page {page}")
+            if self._annot_kind(annot) in MARKUP_KINDS:
+                raise ValueError("Text markups follow their text and cannot "
+                                 "be moved or resized")
             rect = annot.rect
             old = (rect.x0, rect.y0, rect.x1, rect.y1)
             del annot, page_proxy
@@ -906,9 +967,18 @@ class EditSession:
 
     def apply_redactions(self, pages: Optional[Sequence[int]] = None,
                          *, redact_images: bool = False) -> None:
+        """Burn the marked areas out of the content.
+
+        Text under a mark is removed, covered image pixels are blanked (the
+        rest of the picture survives; ``redact_images`` removes the whole
+        image instead) and vector art fully inside a mark is dropped. The
+        earlier "images NONE / line art NONE" flags left the original pixels
+        and shapes in the saved file under a black box, which is not a
+        redaction at all.
+        """
         fitz = D.fitz
         image_flag = (fitz.PDF_REDACT_IMAGE_REMOVE if redact_images
-                      else fitz.PDF_REDACT_IMAGE_NONE)
+                      else fitz.PDF_REDACT_IMAGE_PIXELS)
 
         def mutate() -> None:
             doc = self.document._doc
@@ -916,11 +986,18 @@ class EditSession:
             for index in targets:
                 doc[index].apply_redactions(
                     images=image_flag,
-                    graphics=fitz.PDF_REDACT_LINE_ART_NONE,
+                    graphics=fitz.PDF_REDACT_LINE_ART_REMOVE_IF_COVERED,
                     text=fitz.PDF_REDACT_TEXT_REMOVE,
                 )
 
         self._execute(SnapshotCommand("Apply redactions", mutate))
+
+    def pending_redactions(self) -> int:
+        """Redaction marks on every page, which is what apply removes."""
+        with self.document._lock:
+            return sum(1 for page in range(self.document.page_count)
+                       for info in self.annots_on(page)
+                       if info.kind == TYPE_REDACT)
 
     # -- page operations ----------------------------------------------------
     def rotate_page(self, page: int, degrees: int) -> None:
@@ -1012,11 +1089,22 @@ class EditSession:
         table would break them; the UI warns in that case."""
         return self.document.to_bytes(garbage=not self.document.has_signatures)
 
-    def mark_saved(self, entry: D.Entry) -> None:
+    def history_top(self) -> Optional[Command]:
+        """The command the current document state corresponds to; capture it
+        when serialising for a save and hand it to :meth:`mark_saved`."""
+        return self._history.undo[-1] if self._history.undo else None
+
+    def mark_saved(self, entry: D.Entry, saved_top=_EVICTED_SAVE_MARKER) -> None:
+        """Record a completed save. ``saved_top`` is the history top captured
+        by :meth:`history_top` when the bytes were produced; an edit made
+        while the write was in flight therefore keeps the session dirty.
+        Without it (legacy callers) the current top is assumed."""
         self.entry = entry
         self.document.entry = entry
         self.saved_stamp = entry.stamp
-        self._saved_top = self._history.undo[-1] if self._history.undo else None
+        if saved_top is _EVICTED_SAVE_MARKER:
+            saved_top = self.history_top()
+        self._saved_top = saved_top
         self._fire("Saved", False)
 
     def close(self) -> None:

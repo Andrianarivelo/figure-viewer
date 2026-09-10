@@ -109,6 +109,7 @@ class EditController:
         self._sig_library = None
         self._identity_store = None
         self._pack_manager = None
+        self._save_inflight = False
         self._fields_cache: Optional[tuple[int, list]] = None
         self._ocr_words_cache: dict = {}
 
@@ -162,6 +163,7 @@ class EditController:
         self.session = session
         self.owned = True
         session.on_change.append(self._on_session_change)
+        session.ui_dispatch = self._dispatch
         self._wire_ocr_provider(session)
         self.window.document = session.document
         self.window._minimap_key = None
@@ -170,6 +172,16 @@ class EditController:
         self._refresh_history_buttons()
         self.window._update_window_title()
         return True
+
+    def _dispatch(self, func) -> None:
+        """Run ``func`` on the Tk thread (session change events raised by a
+        worker-thread checkpoint arrive here)."""
+        if self.window._destroyed:
+            return
+        try:
+            self.window.after(0, func)
+        except tk.TclError:
+            pass
 
     def _wire_ocr_provider(self, session: PE.EditSession) -> None:
         """Give the session OCR-backed text for scanned pages, when possible."""
@@ -196,6 +208,14 @@ class EditController:
         """
         if self.window.current is None or not D.HAVE_FITZ:
             return
+        # Navigating to another file: the previous file's session stays
+        # parked (dirty state and history intact) but must stop being THE
+        # session of this window, or gestures would edit the invisible old
+        # document and Ctrl+S would write it over the new file.
+        if (self.session is not None
+                and self.session.entry.path != self.window.current.path):
+            self.deactivate()
+            self._detach_session(close=False)
         parked = self.app.peek_session(self.window.current.path)
         if parked is None:
             return
@@ -214,6 +234,7 @@ class EditController:
         self.owned = True
         if self._on_session_change not in session.on_change:
             session.on_change.append(self._on_session_change)
+        session.ui_dispatch = self._dispatch
         self._wire_ocr_provider(session)
         self.window.document = session.document
         self.window._minimap_key = None
@@ -236,16 +257,23 @@ class EditController:
                 session.on_change.remove(self._on_session_change)
             except ValueError:
                 pass
-            if self.window.current is not None:
-                self.app.release_session(self.window.current.path, close=close)
+            if session.ui_dispatch == self._dispatch:
+                session.ui_dispatch = None
+            # Release under the SESSION's path: after navigation the
+            # window's current file is already a different one.
+            self.app.release_session(session.entry.path, close=close)
         self._refresh_history_buttons()
         self.window._update_window_title()
 
     def discard_session(self) -> None:
         """Drop all edits and reload the pristine document from the cache."""
         current = self.window.current
-        self._detach_session(close=True)
+        # Leave edit mode while the session document is still open: the
+        # overlay redraw inside deactivate() reads find matches and
+        # selection geometry through it.
+        self._find_state = None
         self.deactivate()
+        self._detach_session(close=True)
         if current is not None:
             self.window.load(current, keep_view=True, note="Edits discarded")
 
@@ -355,6 +383,17 @@ class EditController:
         session = self.session
         if session is None or self.window.current is None:
             return False
+        if session.entry.path != self.window.current.path:
+            # Never write one file's edits over another; this is the last
+            # line of defence behind attach_if_parked's parking.
+            messagebox.showerror(
+                "Save PDF", f"The pending edits belong to {session.entry.name}, "
+                f"not to {self.window.current.name}. Open that file again to "
+                "save them.", parent=self.window)
+            return False
+        if self._save_inflight:
+            self.window.toast("A save is already in progress")
+            return False
         self.commit_open_editor()
         if session.document.has_signatures:
             if not messagebox.askokcancel(
@@ -368,6 +407,9 @@ class EditController:
         except Exception as exc:
             messagebox.showerror("Save PDF", str(exc), parent=self.window)
             return False
+        # The bytes above correspond to THIS history top; an edit made while
+        # the write runs must leave the session dirty.
+        saved_top = session.history_top()
 
         def write() -> D.Entry:
             return self._write_atomic(path, data)
@@ -378,15 +420,18 @@ class EditController:
             except Exception as exc:
                 messagebox.showerror("Save PDF", str(exc), parent=self.window)
                 return False
-            self._after_save(fresh, data)
+            self._after_save(fresh, data, saved_top)
             return True
 
         def done(fresh: D.Entry) -> None:
-            self._after_save(fresh, data)
+            self._save_inflight = False
+            self._after_save(fresh, data, saved_top)
 
         def failed(exc: BaseException) -> None:
+            self._save_inflight = False
             messagebox.showerror("Save PDF", str(exc), parent=self.window)
 
+        self._save_inflight = True
         self.window.status_var.set("Saving…")
         self.app.worker.submit(write, done, failed)
         return True
@@ -409,14 +454,14 @@ class EditController:
         stat = path.stat()
         return D.Entry(path, stat.st_size, stat.st_mtime, D.KIND_DOC)
 
-    def _after_save(self, fresh: D.Entry, data: bytes) -> None:
+    def _after_save(self, fresh: D.Entry, data: bytes, saved_top=None) -> None:
         window = self.window
         if window._destroyed or self.session is None:
             return
         self._expected_stamp = fresh.stamp
         self._saved_hash = hashlib.sha256(data).hexdigest()
         self._conflict_notified = False
-        self.session.mark_saved(fresh)
+        self.session.mark_saved(fresh, saved_top)
         window.current = fresh
         window.entries = [fresh if e.path == fresh.path else e
                           for e in window.entries]
@@ -710,6 +755,11 @@ class EditController:
         hit = session.hit_test(self._page(), point, tolerance=HIT_SLOP_PT)
         if hit is not None:
             self._selected_uid = hit.uid
+            if hit.kind in PE.MARKUP_KINDS:
+                # Text markups are anchored to their words: select them
+                # (properties, delete) but never start a move gesture.
+                self._redraw_overlay()
+                return True
             self._gesture = {"tool": "move", "uid": hit.uid, "rect": hit.rect,
                              "start": (event.x, event.y),
                              "now": (event.x, event.y)}
@@ -733,7 +783,7 @@ class EditController:
 
     def _handle_at(self, x: float, y: float) -> Optional[str]:
         info = self._selected_info()
-        if info is None:
+        if info is None or info.kind in PE.MARKUP_KINDS:
             return None
         x0, y0, x1, y1 = self.points_rect_to_canvas(info.rect)
         handles = {"nw": (x0, y0), "ne": (x1, y0), "sw": (x0, y1),
@@ -906,10 +956,10 @@ class EditController:
         self._sync_redact_bar()
 
     def _pending_redactions(self) -> int:
+        """Marks on EVERY page: that is what Apply burns out."""
         if self.session is None:
             return 0
-        return sum(1 for a in self.session.annots_on(self._page())
-                   if a.kind == PE.TYPE_REDACT)
+        return self.session.pending_redactions()
 
     def apply_redactions(self) -> None:
         session = self.session
@@ -1292,20 +1342,25 @@ class EditController:
     def _sign_press(self, event) -> bool:
         placing = self._placing
         assert placing is not None
+        # The box is built in DISPLAY (canvas) space so a signature is
+        # always horizontal on screen, whatever the page's /Rotate or the
+        # viewer's rotation; _canvas_rect_to_points derotates it into the
+        # unrotated annotation frame that stamping expects.
+        px_per_pt = self.window.scale * self._factor()
         if placing["rect_pts"] is None:
-            x, y = self.canvas_to_points(event.x, event.y)
             image = placing["image"]
-            width_pt = SIGN_DEFAULT_WIDTH_PT
-            height_pt = width_pt * image.height / max(image.width, 1)
-            placing["rect_pts"] = (x - width_pt / 2, y - height_pt / 2,
-                                   x + width_pt / 2, y + height_pt / 2)
+            width_px = SIGN_DEFAULT_WIDTH_PT * px_per_pt
+            height_px = width_px * image.height / max(image.width, 1)
+            placing["rect_pts"] = self._canvas_rect_to_points(
+                event.x - width_px / 2, event.y - height_px / 2,
+                event.x + width_px / 2, event.y + height_px / 2)
             self._redraw_overlay()
             return True
         c0 = self.points_rect_to_canvas(placing["rect_pts"])
         near_corner = (abs(event.x - c0[2]) < 12 and abs(event.y - c0[3]) < 12)
         placing["drag"] = {"mode": "resize" if near_corner else "move",
                            "start": (event.x, event.y),
-                           "rect": placing["rect_pts"]}
+                           "canvas_rect": c0}
         return True
 
     def _sign_drag(self, event) -> bool:
@@ -1313,18 +1368,18 @@ class EditController:
         if placing is None or placing.get("drag") is None:
             return True
         drag = placing["drag"]
-        rect = drag["rect"]
-        dx_pt = (event.x - drag["start"][0]) / (self.window.scale * self._factor())
-        dy_pt = (event.y - drag["start"][1]) / (self.window.scale * self._factor())
+        x0, y0, x1, y1 = drag["canvas_rect"]
+        dx = event.x - drag["start"][0]
+        dy = event.y - drag["start"][1]
         if drag["mode"] == "move":
-            placing["rect_pts"] = (rect[0] + dx_pt, rect[1] + dy_pt,
-                                   rect[2] + dx_pt, rect[3] + dy_pt)
+            moved = (x0 + dx, y0 + dy, x1 + dx, y1 + dy)
         else:
             image = placing["image"]
-            new_width = max(30.0, rect[2] - rect[0] + dx_pt)
+            min_px = 30.0 * self.window.scale * self._factor()
+            new_width = max(min_px, (x1 - x0) + dx)
             new_height = new_width * image.height / max(image.width, 1)
-            placing["rect_pts"] = (rect[0], rect[1],
-                                   rect[0] + new_width, rect[1] + new_height)
+            moved = (x0, y0, x0 + new_width, y0 + new_height)
+        placing["rect_pts"] = self._canvas_rect_to_points(*moved)
         self._redraw_overlay()
         return True
 
@@ -1697,7 +1752,10 @@ class EditController:
             messagebox.showerror("Page operation", str(exc), parent=self.window)
             return
         window = self.window
-        window.page = min(window.page, self.session.document.page_count - 1)
+        # Route through the page setter so the readouts, text layer, index
+        # and overlay all follow the (possibly clamped) page index.
+        window._set_document_page(
+            max(0, min(window.page, self.session.document.page_count - 1)))
 
     def rotate_page(self, page: int, degrees: int) -> None:
         self._page_op(lambda s: s.rotate_page(page, degrees))
@@ -2263,6 +2321,24 @@ class EditController:
         self._redraw_overlay()
 
 
+def reorder_plan(source: int, target: int, page_count: int
+                 ) -> Optional[tuple[int, int]]:
+    """Translate a thumb-strip drop into a ``Document.move_page`` call.
+
+    ``target`` is the slot the page was dropped before (``page_count`` means
+    "after the last page"). PyMuPDF's ``move_page(pno, to)`` inserts the page
+    *before* ``to`` (``-1`` appends), so dropping one slot to the right needs
+    ``to = target`` and not the final index, which used to make a one-slot
+    rightward drag a silent no-op. Returns ``(insert_before, final_index)``
+    or ``None`` when the drop changes nothing.
+    """
+    if target in (source, source + 1):
+        return None
+    insert_before = target if target < page_count else -1
+    destination = target if target < source else target - 1
+    return insert_before, destination
+
+
 class ThumbStrip(ttk.Frame):
     """Horizontal page-thumbnail strip with click, context menu and reorder."""
 
@@ -2417,15 +2493,14 @@ class ThumbStrip(ttk.Frame):
             return
         target = self._insert_index(event.x)
         source = drag["page"]
-        if target is None:
-            return
-        destination = target if target < source else target - 1
-        if destination == source:
-            return
         session = self.controller.session
-        if session is None:
+        if target is None or session is None:
             return
-        session.move_page(source, destination)
+        plan = reorder_plan(source, target, session.document.page_count)
+        if plan is None:
+            return
+        insert_before, destination = plan
+        session.move_page(source, insert_before)
         self.window._set_document_page(
             max(0, min(destination, session.document.page_count - 1)))
 

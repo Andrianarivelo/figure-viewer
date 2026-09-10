@@ -474,8 +474,11 @@ def stamp_signature(session, page: int,
     with session.checkpoint("Sign"):
         with session.document._lock:
             target = session._page(page)
+            # rotate follows /Rotate: the rect is in unrotated coordinates
+            # and the picture must read upright on the rendered page.
             target.insert_image(D.fitz.Rect(x0, y0, x1, y1),
-                                stream=bytes(png_bytes), keep_proportion=True)
+                                stream=bytes(png_bytes), keep_proportion=True,
+                                rotate=target.rotation)
 
 
 # ---------------------------------------------------------------------------
