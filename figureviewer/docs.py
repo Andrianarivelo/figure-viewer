@@ -765,10 +765,27 @@ class VectorDocument(Document):
 
         The textpage is created and consumed inside the lock, on the one page
         proxy that produced it; only plain tuples leave the lock scope.
+
+        PyMuPDF reports text boxes in *unrotated* page coordinates, while
+        rendering (and ``page.rect``) honour the page's /Rotate attribute, so
+        boxes are pushed through ``page.rotation_matrix`` here: a scanned
+        landscape page stored rotated by 90 degrees still gets boxes that sit
+        on its rendered glyphs.
         """
         try:
             with self._lock:
-                raw = self._page(page).get_text("words")
+                proxy = self._page(page)
+                raw = proxy.get_text("words")
+                matrix = proxy.rotation_matrix if proxy.rotation else None
+                if matrix is not None:
+                    rotated = []
+                    for x0, y0, x1, y1, *rest in raw:
+                        rect = fitz.Rect(x0, y0, x1, y1) * matrix
+                        rotated.append((min(rect.x0, rect.x1), min(rect.y0, rect.y1),
+                                        max(rect.x0, rect.x1), max(rect.y0, rect.y1),
+                                        *rest))
+                    raw = rotated
+                del proxy
         except Exception:
             return []
         factor = self.base_dpi / 72.0

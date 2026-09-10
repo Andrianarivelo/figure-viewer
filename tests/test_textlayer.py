@@ -11,6 +11,7 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
+from figureviewer import docs as D
 from figureviewer import textlayer as T
 from figureviewer import viewer
 
@@ -123,6 +124,94 @@ class SelectionTests(unittest.TestCase):
         rects = self.layer.rects_for([1, 2, 3])
         self.assertEqual(rects, [(35, 0, 125, 10), (0, 20, 30, 30)])
         self.assertEqual(self.layer.rects_for([]), [])
+
+
+class LineGeometryTests(unittest.TestCase):
+    """Vertical writing and broken source grouping must not produce the
+    full-page stripes seen on a rotated scan (2026-09-10 report)."""
+
+    def test_vertical_line_gets_vertical_ribbon_and_caret(self) -> None:
+        # One column of vertical text, top to bottom, then a second column.
+        raw = [
+            (50, 0, 68, 40, "Informations", 0, 0, 0),
+            (50, 45, 68, 90, "Générales", 0, 0, 1),
+            (50, 95, 68, 120, "1.", 0, 0, 2),
+            (100, 0, 118, 30, "Durée", 1, 0, 0),
+            (100, 35, 118, 70, "projet", 1, 0, 1),
+        ]
+        layer = T.TextLayer.from_words(raw)
+        self.assertEqual(layer.line_vertical, [True, True])
+        self.assertEqual(layer.rects_for([1, 2]), [(50, 45, 68, 120)])
+        # Caret: a pointer beside the first column, at the height of the
+        # second word, resolves to that word, not to the other column.
+        self.assertEqual(layer.nearest(75, 60), 1)
+        self.assertEqual(layer.nearest(109, 200), 4)   # past the column end
+
+    def test_broken_source_lines_fall_back_to_geometry(self) -> None:
+        # The source claims one "line" holding words scattered over the
+        # page (fat in both directions); geometry rebuilds real lines.
+        raw = [
+            (0, 0, 30, 10, "The", 0, 0, 0),
+            (0, 100, 30, 110, "fox", 0, 0, 1),
+            (200, 0, 240, 10, "quick", 0, 0, 2),
+            (200, 100, 245, 110, "jumps", 0, 0, 3),
+        ]
+        layer = T.TextLayer.from_words(raw)
+        self.assertEqual(layer.lines, [(0, 2), (2, 4)])
+        self.assertEqual(layer.text_for(layer.all_indices()),
+                         "The quick\nfox jumps")
+        self.assertEqual(layer.rects_for(layer.all_indices()),
+                         [(0, 0, 240, 10), (0, 100, 245, 110)])
+
+    def test_normal_lines_are_not_mistaken_for_broken(self) -> None:
+        layer = _layer()
+        self.assertEqual(layer.lines, [(0, 3), (3, 5), (5, 7)])
+        self.assertEqual(layer.line_vertical, [False, False, False])
+
+
+@unittest.skipUnless(D.HAVE_FITZ, "PyMuPDF is not installed")
+class RotatedPageWordsTests(unittest.TestCase):
+    """Document.words() must land on the rendered glyphs of a page whose
+    /Rotate attribute is not zero."""
+
+    def _dark_fraction(self, image, box) -> float:
+        crop = image.convert("L").crop(tuple(int(round(v)) for v in box))
+        pixels = list(crop.get_flattened_data()) if hasattr(
+            crop, "get_flattened_data") else list(crop.getdata())
+        return sum(1 for v in pixels if v < 128) / max(1, len(pixels))
+
+    def test_words_follow_page_rotation(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "rotated.pdf"
+            doc = D.fitz.open()
+            page = doc.new_page(width=300, height=200)
+            page.insert_text((40, 100), "Rotated words", fontsize=28)
+            page.set_rotation(90)
+            doc.save(str(path))
+            doc.close()
+            stat = path.stat()
+            entry = D.Entry(path, stat.st_size, stat.st_mtime, D.KIND_DOC)
+            document = D.VectorDocument(entry, path.read_bytes(), base_dpi=144)
+            try:
+                width, height = document.page_size(0)
+                self.assertGreater(height, width, "rotated page is portrait")
+                words = document.words(0)
+                self.assertEqual([w[4] for w in words], ["Rotated", "words"])
+                image = document.full_page(0)
+                for x0, y0, x1, y1, *_ in words:
+                    self.assertTrue(0 <= x0 < x1 <= width and 0 <= y0 < y1 <= height)
+                    self.assertGreater(self._dark_fraction(image, (x0, y0, x1, y1)),
+                                       0.10, "box must cover its glyphs")
+                # Rotated by 90 degrees, the line runs vertically on screen.
+                x0, y0, x1, y1 = words[0][:4]
+                self.assertGreater(y1 - y0, x1 - x0)
+                layer = T.TextLayer.from_words(words)
+                self.assertEqual(layer.line_vertical, [True])
+            finally:
+                document.close()
 
 
 class TransformTests(unittest.TestCase):

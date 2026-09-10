@@ -33,6 +33,23 @@ Rect = tuple[float, float, float, float]
 #: Words whose vertical overlap with the current line is below this fraction
 #: of the shorter height start a new line when no block/line indices exist.
 LINE_OVERLAP_MIN = 0.5
+#: A source's own line grouping is distrusted (and lines are re-inferred
+#: geometrically) when a "line" spans more than this many median word
+#: heights AND widths: real lines are thin in one direction, whatever their
+#: writing direction.
+BROKEN_LINE_FACTOR = 2.5
+#: A multi-word line taller than this times its width is vertical text.
+VERTICAL_ASPECT = 1.5
+
+
+def _median(values: Sequence[float]) -> float:
+    ordered = sorted(values)
+    if not ordered:
+        return 0.0
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[middle]
+    return (ordered[middle - 1] + ordered[middle]) / 2.0
 
 
 @dataclass(frozen=True)
@@ -100,13 +117,17 @@ class TextLayer:
         cleaned = [w for w in words
                    if w.text.strip() and w.rect[2] > w.rect[0]
                    and w.rect[3] > w.rect[1]]
-        if cleaned and all(w.block < 0 or w.line < 0 for w in cleaned):
+        if cleaned and (all(w.block < 0 or w.line < 0 for w in cleaned)
+                        or self._lines_look_broken(cleaned)):
             cleaned = self._infer_lines(cleaned)
         self.words: tuple[Word, ...] = tuple(cleaned)
         #: ``(start, end)`` word index ranges, one per line, in order.
         self.lines: list[tuple[int, int]] = []
         #: Union rectangle of each line's words, parallel to ``lines``.
         self.line_rects: list[Rect] = []
+        #: True for lines of vertical writing (multi-word, tall and narrow);
+        #: their ribbons and caret distances swap axes.
+        self.line_vertical: list[bool] = []
         self._line_of: list[int] = []
         start = 0
         for index in range(1, len(self.words) + 1):
@@ -114,11 +135,34 @@ class TextLayer:
             if last or ((self.words[index].block, self.words[index].line)
                         != (self.words[index - 1].block,
                             self.words[index - 1].line)):
+                rect = _union([w.rect for w in self.words[start:index]])
                 self.lines.append((start, index))
-                self.line_rects.append(_union([w.rect for w in
-                                               self.words[start:index]]))
+                self.line_rects.append(rect)
+                self.line_vertical.append(
+                    index - start > 1
+                    and (rect[3] - rect[1]) > VERTICAL_ASPECT * (rect[2] - rect[0]))
                 self._line_of.extend([len(self.lines) - 1] * (index - start))
                 start = index
+
+    @staticmethod
+    def _lines_look_broken(words: list[Word]) -> bool:
+        """True when some source line is fat in BOTH directions, which no
+        real line of text is: the block/line indices cannot be trusted."""
+        heights = [w.rect[3] - w.rect[1] for w in words]
+        widths = [w.rect[2] - w.rect[0] for w in words]
+        limit_h = BROKEN_LINE_FACTOR * _median(heights)
+        limit_w = BROKEN_LINE_FACTOR * _median(widths)
+        start = 0
+        for index in range(1, len(words) + 1):
+            if index == len(words) or ((words[index].block, words[index].line)
+                                       != (words[index - 1].block,
+                                           words[index - 1].line)):
+                rect = _union([w.rect for w in words[start:index]])
+                if (rect[3] - rect[1] > limit_h and rect[2] - rect[0] > limit_w
+                        and index - start > 1):
+                    return True
+                start = index
+        return False
 
     # ---------------------------------------------------------- factories
     @classmethod
@@ -190,17 +234,22 @@ class TextLayer:
         best_line = None
         best_key = None
         for line_no, (lx0, ly0, lx1, ly1) in enumerate(self.line_rects):
-            key = (_distance_1d(ly0, ly1, y), _distance_1d(lx0, lx1, x))
+            across = _distance_1d(ly0, ly1, y)      # distance off the band
+            along = _distance_1d(lx0, lx1, x)       # distance past the ends
+            if self.line_vertical[line_no]:
+                across, along = along, across
+            key = (across, along)
             if best_key is None or key < best_key:
                 best_key, best_line = key, line_no
         start, end = self.lines[best_line]
+        vertical = self.line_vertical[best_line]
         best_index = start
-        best_dx = None
+        best_d = None
         for index in range(start, end):
-            x0, _y0, x1, _y1 = self.words[index].rect
-            dx = _distance_1d(x0, x1, x)
-            if best_dx is None or dx < best_dx:
-                best_dx, best_index = dx, index
+            x0, y0, x1, y1 = self.words[index].rect
+            d = _distance_1d(y0, y1, y) if vertical else _distance_1d(x0, x1, x)
+            if best_d is None or d < best_d:
+                best_d, best_index = d, index
         return best_index
 
     def range_indices(self, anchor: int, focus: int) -> list[int]:
@@ -261,8 +310,13 @@ class TextLayer:
                 self.words[index].rect)
         out = []
         for line_no in sorted(per_line):
-            x0 = min(r[0] for r in per_line[line_no])
-            x1 = max(r[2] for r in per_line[line_no])
-            _lx0, ly0, _lx1, ly1 = self.line_rects[line_no]
-            out.append((x0, ly0, x1, ly1))
+            lx0, ly0, lx1, ly1 = self.line_rects[line_no]
+            if self.line_vertical[line_no]:
+                y0 = min(r[1] for r in per_line[line_no])
+                y1 = max(r[3] for r in per_line[line_no])
+                out.append((lx0, y0, lx1, y1))
+            else:
+                x0 = min(r[0] for r in per_line[line_no])
+                x1 = max(r[2] for r in per_line[line_no])
+                out.append((x0, ly0, x1, ly1))
         return out
