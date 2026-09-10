@@ -147,6 +147,14 @@ def _draw_icon(name: str, size: int, colour: str, accent: str) -> Image.Image:
         line(((8, 12), (14, 12)), width=max(3, stroke - 1))
         line(((8, 16), (13, 16)), width=max(3, stroke - 1))
         line(((17, 8), (20, 8), (20, 21), (8, 21)), fill=accent)
+    elif name == "index":
+        # Outline tree: a top-level entry with two indented children.
+        thin = max(3, stroke - 1)
+        line(((4, 6), (20, 6)), width=thin)
+        draw.ellipse((*pt(6, 10.5), *pt(9, 13.5)), fill=accent)
+        line(((11, 12), (20, 12)), width=thin)
+        draw.ellipse((*pt(6, 16.5), *pt(9, 19.5)), fill=accent)
+        line(((11, 18), (20, 18)), width=thin)
     elif name == "info":
         draw.ellipse((*pt(4, 4), *pt(20, 20)), outline=colour, width=stroke)
         draw.ellipse((*pt(11, 7), *pt(13, 9)), fill=accent)

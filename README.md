@@ -234,6 +234,18 @@ is selected, so the old shortcut keeps working. Dragging on blank page area
 still pans. Selections live in page coordinates, so rotating or flipping the
 view keeps them.
 
+**Index panel.** A PDF that carries bookmarks gets an **Index** panel on the
+right (toolbar button or `Ctrl+Shift+I`): the outline as a tree, a filter box,
+expand and collapse buttons, and the bookmark covering the page on screen
+highlighted as you read. Clicking an entry jumps to its page and lands on the
+bookmark's target point, rotated pages included. The panel appears only when
+the document has an outline and shares the right dock with the details panel.
+
+**One-click OCR copy.** The **OCR** toolbar button (`Ctrl+Shift+T`, also
+`Edit > Copy Image Text`) reads the text of the current image or scanned PDF
+page and puts all of it on the clipboard in one go; images that were already
+recognised and PDF pages with a text layer skip straight to the copy.
+
 **OCR images too.** `Tools > Recognise Text` on a PNG, JPEG, TIFF or any other
 picture reads its text with the same engine and clean-up pass; the result is a
 selectable text layer on top of the image (same gestures, `Edit > Copy Page
@@ -582,6 +594,7 @@ figureviewer/
     editui.py              the edit-mode controller wired into the viewer
     textlayer.py           selectable text layer: words, carets, ranges, ribbons
     textui.py              text selection, image OCR and searchable PDF glue
+    indexui.py             docked outline (bookmarks) panel with navigation
     dialogs.py             themed dialogs: export, signatures, identities, OCR
 ```
 

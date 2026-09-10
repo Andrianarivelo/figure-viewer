@@ -147,6 +147,21 @@ def kinds_for_filter(mode: str) -> set[str]:
 
 
 @dataclass(frozen=True)
+class OutlineEntry:
+    """One bookmark of a document's outline (table of contents).
+
+    ``page`` is 0-based (-1 when the bookmark has no page target) and
+    ``y_pts`` is the vertical target on that page in rendered (rotated) page
+    points from the top edge, or ``None`` to land at the page top.
+    """
+
+    level: int
+    title: str
+    page: int
+    y_pts: Optional[float] = None
+
+
+@dataclass(frozen=True)
 class Entry:
     """Immutable metadata for one file on disk.
 
@@ -516,6 +531,10 @@ class Document:
         source pixels; empty for formats without a text layer."""
         return []
 
+    def outline(self) -> list[OutlineEntry]:
+        """The document's bookmarks in reading order; empty when it has none."""
+        return []
+
     def close(self) -> None:
         """Release any native resources."""
 
@@ -792,6 +811,42 @@ class VectorDocument(Document):
         return [(x0 * factor, y0 * factor, x1 * factor, y1 * factor,
                  str(text), int(block), int(line), int(word_no))
                 for x0, y0, x1, y1, text, block, line, word_no in raw]
+
+    def outline(self) -> list[OutlineEntry]:
+        """Bookmarks from the PDF outline, with targets in rendered page
+        points. Everything fitz-related happens under the lock; only plain
+        data leaves it. A damaged outline yields an empty list, never an
+        exception on the UI thread."""
+        try:
+            with self._lock:
+                toc = self._doc.get_toc(simple=False)
+                entries: list[OutlineEntry] = []
+                rotations: dict[int, tuple[int, object]] = {}
+                for level, title, page_no, dest in toc:
+                    page = int(page_no) - 1
+                    y_pts: Optional[float] = None
+                    if 0 <= page < self.page_count and isinstance(dest, dict):
+                        to = dest.get("to")
+                        if to is not None and (dest.get("kind", 1) == 1):
+                            if page not in rotations:
+                                proxy = self._page(page)
+                                rotations[page] = (proxy.rotation,
+                                                   proxy.rotation_matrix)
+                                del proxy
+                            rotation, matrix = rotations[page]
+                            point = fitz.Point(to)
+                            if rotation:
+                                point = point * matrix
+                            if point.y > 0:
+                                y_pts = float(point.y)
+                    else:
+                        page = page if 0 <= page < self.page_count else -1
+                    entries.append(OutlineEntry(max(1, int(level)),
+                                                str(title).strip() or "(untitled)",
+                                                page, y_pts))
+        except Exception:
+            return []
+        return entries
 
     def close(self) -> None:
         try:

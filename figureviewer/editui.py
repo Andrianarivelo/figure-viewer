@@ -266,6 +266,7 @@ class EditController:
             if self.thumb_strip is not None:
                 self.thumb_strip.refresh()
             self._fields_cache = None
+            window.index.refresh()      # page ops move bookmark targets
         self._ocr_words_cache.clear()
         self.review.refresh()
 
@@ -1524,7 +1525,9 @@ class EditController:
                 app_module.SETTINGS_DIR / "tessdata")
         return self._pack_manager
 
-    def open_ocr(self) -> None:
+    def open_ocr(self, then=None) -> None:
+        """Tools > Recognise Text for PDFs; ``then`` runs after a successful
+        overlay (used by the one-click OCR-and-copy command)."""
         from . import ocr as ocr_module
         document = self._document()
         if document is None:
@@ -1553,9 +1556,9 @@ class EditController:
         if not self._ensure_session():
             return
         pages = [self._page()] if config["scope"] == "page" else None
-        self._run_ocr(config, pages)
+        self._run_ocr(config, pages, then)
 
-    def _run_ocr(self, config: dict, pages) -> None:
+    def _run_ocr(self, config: dict, pages, then=None) -> None:
         from . import ocr as ocr_module
         manager = self._packs()
         session = self.session
@@ -1591,6 +1594,8 @@ class EditController:
             else:
                 self.window.toast("Nothing to OCR: pages already carry text")
             self._ocr_words_cache.clear()
+            if then is not None:
+                then()
 
         def failed(exc):
             messagebox.showerror("OCR", str(exc), parent=self.window)

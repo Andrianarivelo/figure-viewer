@@ -46,6 +46,7 @@ from . import video as V
 from . import winclip
 from .editui import EditController
 from .icons import IconFactory
+from .indexui import IndexController
 from .textui import TextController
 from .theme import (LIST_FLAT, LIST_TREE, SIDEBAR_DEFAULT, SIDEBAR_MAX,
                     SIDEBAR_MIN, MenuBar, Palette, bind_tooltip,
@@ -309,13 +310,17 @@ class ViewerWindow(tk.Toplevel):
         self.minsize(880, 560)
         self.configure(background=self.palette.bg)
 
+        # Text selection and image OCR; consulted after edit tools and snip
+        # in every gesture, before panning. The toolbar's OCR button targets
+        # it, so it exists before the UI is built (it needs no widgets).
+        self.text = TextController(self)
+        # Document outline (bookmarks) docked on the right when available;
+        # its panel is built inside _build_ui's right dock.
+        self.index = IndexController(self)
         self._build_ui()
         # The edit controller wires itself into the toolbar, the stage rows
         # and (below) the menus, so it must exist between the two builders.
         self.edit = EditController(self)
-        # Text selection and image OCR; consulted after edit tools and snip
-        # in every gesture, before panning.
-        self.text = TextController(self)
         self.edit.build_toolbar_button(self.actionbar)
         self._build_menus()
         self._bind_keys()
@@ -447,8 +452,23 @@ class ViewerWindow(tk.Toplevel):
             actionbar, text="Snip", image=self.icons.get("snip"), compound="left",
             variable=self.snip_mode, style="Modal.TCheckbutton", takefocus=False,
             command=self._snip_mode_changed)
-        self.snip_button.pack(side="left", padx=(0, 8))
+        self.snip_button.pack(side="left", padx=(0, 4))
         bind_tooltip(self.snip_button, "Drag a rectangle to copy that region  (S)", p)
+
+        ocr = toolbar_button(actionbar, "OCR", self.text.ocr_and_copy, p,
+                             "Read the text in this image or scanned page and copy it  "
+                             "(Ctrl+Shift+T)", image=self.icons.get("ocr"))
+        ocr.pack(side="left", padx=(0, 8))
+        self.ocr_button = ocr
+
+        index_button = ttk.Checkbutton(
+            actionbar, text="Index", image=self.icons.get("index"), compound="left",
+            variable=self.index.show_index, style="Toggle.TCheckbutton",
+            takefocus=False, command=self._apply_layout)
+        index_button.pack(side="left", padx=(0, 4))
+        self.index_button = index_button
+        bind_tooltip(index_button, "Show the document's index (bookmarks) when it has one  "
+                                   "(Ctrl+Shift+I)", p)
 
         files = ttk.Checkbutton(
             actionbar, text="Files", image=self.icons.get("files"), compound="left",
@@ -494,7 +514,13 @@ class ViewerWindow(tk.Toplevel):
         self.pdf_controls = self._build_pdf_controls(stage)
         self.video_controls = self._build_video_controls(stage)
 
-        self.info_panel = self._build_info_panel(body)
+        # Right dock: the index (outline) above the details panel, each
+        # shown independently; the dock itself appears only when one is.
+        dock = ttk.Frame(body, style="Panel.TFrame")
+        dock.columnconfigure(0, weight=1)
+        self.right_dock = dock
+        self.index_panel = self.index.build(dock)
+        self.info_panel = self._build_info_panel(dock)
 
         # --- status bar -----------------------------------------------------
         ttk.Frame(self, style="Rule.TFrame", height=1).grid(row=4, column=0, sticky="ew")
@@ -726,9 +752,13 @@ class ViewerWindow(tk.Toplevel):
         frame.columnconfigure(0, weight=1)
         ttk.Label(frame, text="DETAILS", image=self.icons.get("info", tone="muted"),
                   compound="left", style="Section.TLabel").grid(row=0, column=0, sticky="w")
-        text = tk.Text(frame, width=32, wrap="word", background=p.panel, foreground=p.text,
-                       insertbackground=p.text, relief="flat", highlightthickness=0,
-                       font="FVsmall", padx=0, pady=8, spacing1=1, spacing3=3, cursor="arrow")
+        # A small requested height: the dock's grid weights, not this
+        # widget's natural size, decide how it shares the column with the
+        # index panel above it.
+        text = tk.Text(frame, width=32, height=8, wrap="word", background=p.panel,
+                       foreground=p.text, insertbackground=p.text, relief="flat",
+                       highlightthickness=0, font="FVsmall", padx=0, pady=8,
+                       spacing1=1, spacing3=3, cursor="arrow")
         text.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
         # PDF metadata easily overflows the panel; without this the tail was
         # simply invisible, with no hint that anything had been cut off.
@@ -815,6 +845,8 @@ class ViewerWindow(tk.Toplevel):
         edit_menu.add_command(label="Copy File (paste into Explorer)", command=self.copy_file_object)
         edit_menu.add_command(label="Copy Folder Path", command=self.copy_folder_path)
         edit_menu.add_command(label="Copy Page Text", command=self.copy_page_text)
+        edit_menu.add_command(label="Copy Image Text (OCR)", accelerator="Ctrl+Shift+T",
+                              command=self.text.ocr_and_copy)
         edit_menu.add_separator()
         edit_menu.add_command(label="Snip Region", accelerator="S", command=lambda: self.snip_mode.set(True) or self._snip_mode_changed())
         edit_menu.add_command(label="Find in File List", accelerator="Ctrl+F", command=self.focus_search)
@@ -848,6 +880,10 @@ class ViewerWindow(tk.Toplevel):
                                   variable=self.sidebar_auto_hide,
                                   command=self._sidebar_auto_hide_changed)
         view_menu.add_checkbutton(label="Details Panel", accelerator="Ctrl+I", variable=self.show_info,
+                                  command=self._apply_layout)
+        view_menu.add_checkbutton(label="Index Panel (when the PDF has one)",
+                                  accelerator="Ctrl+Shift+I",
+                                  variable=self.index.show_index,
                                   command=self._apply_layout)
         view_menu.add_checkbutton(label="Overview Map", variable=self.show_minimap, command=self.redraw_now)
         thumbs = tk.Menu(view_menu)
@@ -1005,6 +1041,8 @@ class ViewerWindow(tk.Toplevel):
         bind("<Control-t>", lambda e: self.app.toggle_theme())
         bind("<Control-c>", self._copy_shortcut)
         bind("<Control-a>", guard(self.text.select_all))
+        bind("<Control-T>", guard(self.text.ocr_and_copy))
+        bind("<Control-I>", guard(self.index.toggle))
         bind("<Control-Alt-h>", guard(self.edit.review.action))
         bind("<Control-Alt-m>", guard(lambda: self.edit.review.action("comment")))
         bind("<Control-Alt-r>", guard(self.edit.review.toggle_panel))
@@ -1108,13 +1146,29 @@ class ViewerWindow(tk.Toplevel):
             self.sidebar.grid_remove()
             self.sash.grid_remove()
             self.body.columnconfigure(0, minsize=0)
-        if self.show_info.get():
-            self.info_panel.grid(row=0, column=3, sticky="nsew")
+        show_index = self.index.visible()
+        show_info = self.show_info.get()
+        dock = self.right_dock
+        if show_index:
+            self.index_panel.grid(row=0, column=0, sticky="nsew")
+            dock.rowconfigure(0, weight=3 if show_info else 1)
+        else:
+            self.index_panel.grid_remove()
+            dock.rowconfigure(0, weight=0)
+        if show_info:
+            self.info_panel.grid(row=1, column=0, sticky="nsew")
+            dock.rowconfigure(1, weight=2 if show_index else 1)
             self._update_info()
         else:
             self.info_panel.grid_remove()
+            dock.rowconfigure(1, weight=0)
+        if show_index or show_info:
+            dock.grid(row=0, column=3, sticky="nsew")
+        else:
+            dock.grid_remove()
         self.app.settings["show_sidebar"] = self.show_sidebar.get()
         self.app.settings["show_info"] = self.show_info.get()
+        self.app.settings["show_index"] = self.index.show_index.get()
         if self.show_sidebar.get():
             self._schedule_sidebar_hide()
         else:
@@ -1715,6 +1769,7 @@ class ViewerWindow(tk.Toplevel):
             # A parked edit session for this file takes over the document
             # object here, restoring dirty state and undo history.
             self.edit.on_document_loaded()
+            self.index.refresh()
             self._prefetch_neighbours()
 
         def failed(exc):
@@ -2911,6 +2966,7 @@ class ViewerWindow(tk.Toplevel):
         self._update_status("Page")
         self._update_info()
         self._sync_pdf_controls()
+        self.index.sync_page(page)
 
     def _sync_pdf_controls(self) -> None:
         """Show page buttons and detected format only for multi-page PDFs."""
@@ -3391,6 +3447,8 @@ class ViewerWindow(tk.Toplevel):
             ("Ctrl+A", "Select all text on the page"),
             ("Esc", "Clear the selection"),
             ("Tools > Recognise Text", "OCR a scan or an image; images gain a text layer"),
+            ("Ctrl+Shift+T", "OCR the image or scanned page and copy its text"),
+            ("Ctrl+Shift+I", "Index panel: the PDF's bookmarks, click to jump"),
             ("", ""),
             ("Copy and snip", ""),
             ("S", "Snip mode: drag a rectangle to copy it"),

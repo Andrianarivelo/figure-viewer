@@ -396,6 +396,31 @@ class TextController:
             return
         self.window.toast(f"Copied {len(text)} characters of page text")
 
+    def ocr_and_copy(self) -> None:
+        """One click: read the text of the picture or scanned page, then
+        copy all of it. Images that already carry an OCR layer and PDF pages
+        with a text layer skip straight to the copy."""
+        from . import ocr as ocr_module
+        window = self.window
+        document = window.document
+        if document is None or window._video_session is not None:
+            window.toast("Open an image or a PDF page to read its text")
+            return
+        if self.has_text():
+            self.copy_page_text()
+            return
+        if document.kind == D.KIND_IMAGE:
+            self._start_image_ocr(then=self.copy_page_text)
+            return
+        # A PDF page without a text layer: the edit studio's OCR overlay
+        # makes it searchable; copy once the layer is in place.
+        if not ocr_module.ocr_available():
+            messagebox.showinfo(
+                "OCR", "The integrated OCR engine is unavailable in this "
+                "PyMuPDF build.", parent=window)
+            return
+        window.edit.open_ocr(then=self.copy_page_text)
+
     # ------------------------------------------------------ context menu
     def context_items(self, menu: tk.Menu, event) -> None:
         window = self.window
@@ -412,6 +437,8 @@ class TextController:
                              command=self.select_all)
             menu.add_command(label="Copy Page Text", command=self.copy_page_text)
         if document.kind == D.KIND_IMAGE:
+            menu.add_command(label="Copy Image Text (OCR)", accelerator="Ctrl+Shift+T",
+                             command=self.ocr_and_copy)
             menu.add_command(label="Recognise Text (OCR)…", command=self.open_ocr)
             if has_text:
                 menu.add_command(label="Save as Searchable PDF…",
