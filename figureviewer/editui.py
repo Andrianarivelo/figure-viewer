@@ -2017,15 +2017,16 @@ class EditController:
     def build_toolbar_button(self, actionbar) -> None:
         """The Edit toggle beside Snip; called from _build_ui."""
         p = self.palette
+        group = getattr(self.window, "edit_group", actionbar)
         button = ttk.Checkbutton(
-            actionbar, text="Edit", image=self.window.icons.get("pen"),
+            group, text="Edit", image=self.window.icons.get("pen"),
             compound="left", variable=self.edit_mode_var,
-            style="Modal.TCheckbutton", takefocus=False,
+            style="Group.Modal.TCheckbutton", takefocus=False,
             command=self.toggle_mode)
-        button.pack(side="left", padx=(0, 8), after=self.window.snip_button)
+        button.pack(side="left")
         self.edit_button = button
         bind_tooltip(button, "Edit this PDF: annotate, fill, sign  (E)", p)
-        self.review.build_toolbar(actionbar)
+        self.review.build_toolbar(group)
 
     def sync_toolbar(self) -> None:
         """Show the Edit toggle only when it can work."""

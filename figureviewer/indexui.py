@@ -60,6 +60,8 @@ class IndexController:
                   compound="left", style="Section.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(header, textvariable=self.count_var,
                   style="Muted.TLabel").grid(row=0, column=1, sticky="e")
+        ttk.Frame(header, style="Rule.TFrame", height=1).grid(
+            row=1, column=0, columnspan=2, sticky="ew", pady=(7, 0))
 
         search = ttk.Entry(frame, textvariable=self.filter_var)
         search.grid(row=1, column=0, sticky="ew", pady=(8, 8))
@@ -74,8 +76,10 @@ class IndexController:
         tree = ttk.Treeview(holder, columns=("page",), show="tree", height=8,
                             selectmode="browse", takefocus=True, style=LIST_TREE)
         tree.grid(row=0, column=0, sticky="nsew")
+        # Titles stretch with the dock; page numbers sit in their own
+        # right-aligned column instead of being glued to the title.
         tree.column("#0", width=INDEX_WIDTH - 60, stretch=True, anchor="w")
-        tree.column("page", width=0, stretch=False)
+        tree.column("page", width=44, minwidth=36, stretch=False, anchor="e")
         scroll = ttk.Scrollbar(holder, orient="vertical", command=tree.yview,
                                style="Vertical.TScrollbar")
         scroll.grid(row=0, column=1, sticky="ns")
@@ -133,12 +137,10 @@ class IndexController:
                 # Filtering flattens the tree: matches are easier to scan
                 # than a forest of half-opened branches.
                 parent = "" if needle else parents.get(entry.level - 1, "")
-                label = entry.title
-                if entry.page >= 0:
-                    label = f"{entry.title}    ·  {entry.page + 1}"
+                page_label = str(entry.page + 1) if entry.page >= 0 else ""
                 tags = ("nopage",) if entry.page < 0 else ()
-                iid = tree.insert(parent, "end", iid=f"o{index}", text=label,
-                                  values=(entry.page,), tags=tags,
+                iid = tree.insert(parent, "end", iid=f"o{index}", text=entry.title,
+                                  values=(page_label,), tags=tags,
                                   open=entry.level < EXPAND_LEVELS)
                 if not needle:
                     parents[entry.level] = iid

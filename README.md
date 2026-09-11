@@ -242,11 +242,20 @@ and an image never grows past twice its pixels. `View > Zoom on Open` keeps
 the older behaviours available: fit width, fit page, or the A4 reading width.
 
 **Index panel.** A PDF that carries bookmarks gets an **Index** panel on the
-right (toolbar button or `Ctrl+Shift+I`): the outline as a tree, a filter box,
-expand and collapse buttons, and the bookmark covering the page on screen
-highlighted as you read. Clicking an entry jumps to its page and lands on the
-bookmark's target point, rotated pages included. The panel appears only when
-the document has an outline and shares the right dock with the details panel.
+right (toolbar button or `Ctrl+Shift+I`): the outline as a tree with page
+numbers in their own column, a filter box, expand and collapse buttons, and
+the bookmark covering the page on screen highlighted as you read. Clicking an
+entry jumps to its page and lands on the bookmark's target point, rotated
+pages included. The panel appears only when the document has an outline and
+shares the right dock with the details panel; drag the dock's edge to resize
+it (double-click resets), and the width is remembered.
+
+**Toolbar layout.** The action bar is grouped by purpose: zoom and rotation,
+capture (Snip, OCR), editing (Edit, Highlight, Comment, Review), and, at the
+far right where the panels themselves live, the Files, Index and Details
+toggles with the auto-reload and auto-hide preferences beside them. Panels
+carry a hairline under their header, and the file list opens at the normal
+density (View > List Density still offers compact and comfortable).
 
 **Redaction burns content out.** Applying redactions removes the text, blanks
 the covered pixels of images (the rest of the picture survives) and drops

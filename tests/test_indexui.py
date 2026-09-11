@@ -20,6 +20,7 @@ from PIL import Image
 from figureviewer import app as app_module
 from figureviewer import docs as D
 from figureviewer import indexui
+from figureviewer import theme
 
 
 def _entry(path: Path) -> D.Entry:
@@ -182,6 +183,15 @@ class IndexPanelLiveTests(unittest.TestCase):
                     application.root.update()
                     self.assertEqual(index.tree.get_children(""), ("o4",))
                     index.filter_var.set("")
+
+                    # The dock is resizable and remembers its width.
+                    window._set_dock_width(420)
+                    application.root.update()
+                    self.assertEqual(window.right_dock.winfo_width(), 420)
+                    self.assertEqual(application.settings["dock_width"], 420)
+                    self.assertTrue(window.right_sash.winfo_ismapped())
+                    window._set_dock_width(10)
+                    self.assertEqual(window._dock_px, theme.DOCK_MIN)
 
                     # Toggle hides it; a document without bookmarks hides it too.
                     index.toggle()

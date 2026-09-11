@@ -48,9 +48,10 @@ from .editui import EditController
 from .icons import IconFactory
 from .indexui import IndexController
 from .textui import TextController
-from .theme import (LIST_FLAT, LIST_TREE, SIDEBAR_DEFAULT, SIDEBAR_MAX,
-                    SIDEBAR_MIN, MenuBar, Palette, bind_tooltip,
-                    configure_list_density, style_menu, toolbar_button)
+from .theme import (DOCK_DEFAULT, DOCK_MAX, DOCK_MIN, LIST_FLAT, LIST_TREE,
+                    SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN, MenuBar, Palette,
+                    bind_tooltip, configure_list_density, style_menu,
+                    toolbar_button)
 
 ZOOM_MIN = 0.02
 ZOOM_MAX = 32.0
@@ -320,7 +321,7 @@ class ViewerWindow(tk.Toplevel):
         self.grayscale = tk.BooleanVar(value=False)
         self.transparency = tk.StringVar(value=settings.get("transparency", "white"))
         self.thumb_size = tk.IntVar(value=int(settings.get("thumb_size", 24)))
-        self.density = tk.StringVar(value=settings.get("density", "compact"))
+        self.density = tk.StringVar(value=settings.get("density", "normal"))
         self.pdf_dpi = tk.DoubleVar(value=float(settings.get("pdf_dpi", 150.0)))
         self.export_dpi = tk.DoubleVar(value=float(settings.get("export_dpi", 300.0)))
         self.slideshow_secs = tk.DoubleVar(value=float(settings.get("slideshow_secs", 4.0)))
@@ -480,50 +481,66 @@ class ViewerWindow(tk.Toplevel):
         toolbar_button(rot, "", lambda: self.rotate(90), p, "Rotate right  (Ctrl+])",
                        style="Icon.TButton", image=self.icons.get("rotate_right")).pack(side="left")
 
-        # Modal.TCheckbutton, not Toggle: snip mode changes what dragging does,
-        # so it has to be unmistakable while it is on.
+        # Capture group: Snip (modal, unmistakable while on) and OCR.
+        capture = ttk.Frame(actionbar, style="ToolbarGroup.TFrame", padding=2)
+        capture.pack(side="left", padx=(0, 8))
         self.snip_button = ttk.Checkbutton(
-            actionbar, text="Snip", image=self.icons.get("snip"), compound="left",
-            variable=self.snip_mode, style="Modal.TCheckbutton", takefocus=False,
+            capture, text="Snip", image=self.icons.get("snip"), compound="left",
+            variable=self.snip_mode, style="Group.Modal.TCheckbutton", takefocus=False,
             command=self._snip_mode_changed)
-        self.snip_button.pack(side="left", padx=(0, 4))
+        self.snip_button.pack(side="left")
         bind_tooltip(self.snip_button, "Drag a rectangle to copy that region  (S)", p)
-
-        ocr = toolbar_button(actionbar, "OCR", self.text.ocr_and_copy, p,
+        ocr = toolbar_button(capture, "OCR", self.text.ocr_and_copy, p,
                              "Read the text in this image or scanned page and copy it  "
-                             "(Ctrl+Shift+T)", image=self.icons.get("ocr"))
-        ocr.pack(side="left", padx=(0, 8))
+                             "(Ctrl+Shift+T)", style="Group.Tool.TButton",
+                             image=self.icons.get("ocr"))
+        ocr.pack(side="left")
         self.ocr_button = ocr
 
+        # Edit group: the edit controller and the review tools fill it.
+        self.edit_group = ttk.Frame(actionbar, style="ToolbarGroup.TFrame", padding=2)
+        self.edit_group.pack(side="left", padx=(0, 8))
+
+        # Panel toggles sit together at the far right, mirroring where the
+        # panels themselves live; preferences go just before them.
+        panels = ttk.Frame(actionbar, style="ToolbarGroup.TFrame", padding=2)
+        panels.pack(side="right")
+        files = ttk.Checkbutton(
+            panels, text="Files", image=self.icons.get("files"), compound="left",
+            variable=self.show_sidebar, style="Group.Toggle.TCheckbutton", takefocus=False,
+            command=self._sidebar_visibility_changed)
+        files.pack(side="left")
+        self.files_button = files
+        bind_tooltip(files, "Show or hide the file list  (Ctrl+B)", p)
         index_button = ttk.Checkbutton(
-            actionbar, text="Index", image=self.icons.get("index"), compound="left",
-            variable=self.index.show_index, style="Toggle.TCheckbutton",
+            panels, text="Index", image=self.icons.get("index"), compound="left",
+            variable=self.index.show_index, style="Group.Toggle.TCheckbutton",
             takefocus=False, command=self._apply_layout)
-        index_button.pack(side="left", padx=(0, 4))
+        index_button.pack(side="left")
         self.index_button = index_button
         bind_tooltip(index_button, "Show the document's index (bookmarks) when it has one  "
                                    "(Ctrl+Shift+I)", p)
+        details = ttk.Checkbutton(
+            panels, text="Details", image=self.icons.get("info"), compound="left",
+            variable=self.show_info, style="Group.Toggle.TCheckbutton",
+            takefocus=False, command=self._apply_layout)
+        details.pack(side="left")
+        self.details_button = details
+        bind_tooltip(details, "Show file and page details  (Ctrl+I)", p)
 
-        files = ttk.Checkbutton(
-            actionbar, text="Files", image=self.icons.get("files"), compound="left",
-            variable=self.show_sidebar, style="Toggle.TCheckbutton", takefocus=False,
-            command=self._sidebar_visibility_changed)
-        files.pack(side="left", padx=(0, 4))
-        self.files_button = files
-        bind_tooltip(files, "Show or hide the file list  (Ctrl+B)", p)
-
-        auto_hide = ttk.Checkbutton(
-            actionbar, text="Hide in 5s", variable=self.sidebar_auto_hide,
-            style="Toggle.TCheckbutton", takefocus=False,
-            command=self._sidebar_auto_hide_changed)
-        auto_hide.pack(side="left", padx=(0, 8))
-        bind_tooltip(auto_hide, "Automatically hide the file list after five seconds", p)
-
-        auto = ttk.Checkbutton(actionbar, text="Auto reload", image=self.icons.get("auto"),
+        prefs = ttk.Frame(actionbar, style="Toolbar.TFrame")
+        prefs.pack(side="right", padx=(0, 10))
+        auto = ttk.Checkbutton(prefs, text="Auto reload", image=self.icons.get("auto"),
                                compound="left", variable=self.auto_reload,
                                style="Toggle.TCheckbutton", takefocus=False)
-        auto.pack(side="left")
+        auto.pack(side="left", padx=(0, 4))
         bind_tooltip(auto, "Reload the image automatically when the file changes on disk", p)
+        auto_hide = ttk.Checkbutton(
+            prefs, text="Auto-hide list", variable=self.sidebar_auto_hide,
+            style="Toggle.TCheckbutton", takefocus=False,
+            command=self._sidebar_auto_hide_changed)
+        auto_hide.pack(side="left")
+        bind_tooltip(auto_hide, "Hide the file list five seconds after you stop using it", p)
 
         # --- body: sidebar | canvas | info ---------------------------------
         body = ttk.Frame(self, style="TFrame")
@@ -550,9 +567,14 @@ class ViewerWindow(tk.Toplevel):
 
         # Right dock: the index (outline) above the details panel, each
         # shown independently; the dock itself appears only when one is.
+        # Its width is dragged with a sash, like the file list's.
+        self.right_sash = self._build_sash(body, side="right")
         dock = ttk.Frame(body, style="Panel.TFrame")
         dock.columnconfigure(0, weight=1)
         self.right_dock = dock
+        self._dock_px = max(DOCK_MIN, min(DOCK_MAX, int(
+            self.app.settings.get("dock_width", DOCK_DEFAULT))))
+        self._set_dock_width(self._dock_px)
         self.index_panel = self.index.build(dock)
         self.info_panel = self._build_info_panel(dock)
 
@@ -678,6 +700,8 @@ class ViewerWindow(tk.Toplevel):
         ttk.Label(header, text="FILES", image=self.icons.get("files", tone="muted"),
                   compound="left", style="Section.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(header, textvariable=self.count_var, style="Muted.TLabel").grid(row=0, column=1, sticky="e")
+        ttk.Frame(header, style="Rule.TFrame", height=1).grid(
+            row=1, column=0, columnspan=2, sticky="ew", pady=(7, 0))
 
         search = ttk.Entry(frame, textvariable=self.search_var)
         search.grid(row=1, column=0, sticky="ew", pady=(8, 8))
@@ -731,19 +755,37 @@ class ViewerWindow(tk.Toplevel):
             widget.bind("<Key>", self._sidebar_activity, add="+")
         return frame
 
-    def _build_sash(self, master: tk.Misc) -> ttk.Frame:
-        """The draggable divider between the file list and the canvas."""
+    def _build_sash(self, master: tk.Misc, side: str = "left") -> ttk.Frame:
+        """A draggable divider: file list | canvas (left) or canvas | dock
+        (right). Both share one drag handler; the side decides the sign."""
         sash = ttk.Frame(master, style="Sash.TFrame", width=6, cursor="sb_h_double_arrow")
-        sash.grid(row=0, column=1, sticky="ns")
+        sash.grid(row=0, column=1 if side == "left" else 3, sticky="ns")
         sash.bind("<Enter>", lambda _e: sash.configure(style="SashActive.TFrame"))
         sash.bind("<Leave>", lambda _e: sash.configure(style="Sash.TFrame"))
-        sash.bind("<ButtonPress-1>", self._sash_press)
+        sash.bind("<ButtonPress-1>", lambda e: self._sash_press(e, side))
         sash.bind("<B1-Motion>", self._sash_drag)
         sash.bind("<ButtonRelease-1>", self._sash_release)
-        sash.bind("<Double-1>", lambda _e: self._set_sidebar_width(SIDEBAR_DEFAULT))
-        bind_tooltip(sash, "Drag to resize the file list  ·  double-click to reset",
-                     self.palette)
+        if side == "left":
+            sash.bind("<Double-1>", lambda _e: self._set_sidebar_width(SIDEBAR_DEFAULT))
+            bind_tooltip(sash, "Drag to resize the file list  ·  double-click to reset",
+                         self.palette)
+        else:
+            sash.bind("<Double-1>", lambda _e: self._set_dock_width(DOCK_DEFAULT))
+            bind_tooltip(sash, "Drag to resize the index and details panels  ·  "
+                               "double-click to reset", self.palette)
         return sash
+
+    def _set_dock_width(self, width: int) -> None:
+        """Fix the right dock to ``width`` pixels (same technique as the
+        sidebar: the frame owns the width, propagation off)."""
+        width = max(DOCK_MIN, min(DOCK_MAX, int(width)))
+        self._dock_px = width
+        try:
+            self.right_dock.configure(width=width)
+            self.right_dock.grid_propagate(False)
+        except tk.TclError:
+            return
+        self.app.settings["dock_width"] = width
 
     def _set_sidebar_width(self, width: int) -> None:
         """Fix the sidebar to ``width`` pixels.
@@ -766,14 +808,20 @@ class ViewerWindow(tk.Toplevel):
         except AttributeError:
             pass          # called once from _build_ui, before the list exists
 
-    def _sash_press(self, event) -> None:
-        self._sash_origin = (event.x_root, self._sidebar_px)
+    def _sash_press(self, event, side: str = "left") -> None:
+        width = self._sidebar_px if side == "left" else self._dock_px
+        self._sash_origin = (event.x_root, width, side)
 
     def _sash_drag(self, event) -> None:
         if not self._sash_origin:
             return
-        start_x, start_width = self._sash_origin
-        self._set_sidebar_width(start_width + (event.x_root - start_x))
+        start_x, start_width, side = self._sash_origin
+        delta = event.x_root - start_x
+        if side == "left":
+            self._set_sidebar_width(start_width + delta)
+        else:
+            # The dock grows when its sash moves left.
+            self._set_dock_width(start_width - delta)
 
     def _sash_release(self, _event=None) -> None:
         self._sash_origin = None
@@ -781,11 +829,16 @@ class ViewerWindow(tk.Toplevel):
     def _build_info_panel(self, master: tk.Misc) -> ttk.Frame:
         """Right-hand metadata panel (hidden by default)."""
         p = self.palette
-        frame = ttk.Frame(master, style="Panel.TFrame", padding=(12, 10))
+        frame = ttk.Frame(master, style="Panel.TFrame", padding=(12, 10, 8, 8))
         frame.rowconfigure(1, weight=1)
         frame.columnconfigure(0, weight=1)
-        ttk.Label(frame, text="DETAILS", image=self.icons.get("info", tone="muted"),
+        header = ttk.Frame(frame, style="Panel.TFrame")
+        header.grid(row=0, column=0, columnspan=2, sticky="ew")
+        header.columnconfigure(0, weight=1)
+        ttk.Label(header, text="DETAILS", image=self.icons.get("info", tone="muted"),
                   compound="left", style="Section.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Frame(header, style="Rule.TFrame", height=1).grid(
+            row=1, column=0, sticky="ew", pady=(7, 0))
         # A small requested height: the dock's grid weights, not this
         # widget's natural size, decide how it shares the column with the
         # index panel above it.
@@ -1207,8 +1260,10 @@ class ViewerWindow(tk.Toplevel):
             self.info_panel.grid_remove()
             dock.rowconfigure(1, weight=0)
         if show_index or show_info:
-            dock.grid(row=0, column=3, sticky="nsew")
+            self.right_sash.grid(row=0, column=3, sticky="ns")
+            dock.grid(row=0, column=4, sticky="nsew")
         else:
+            self.right_sash.grid_remove()
             dock.grid_remove()
         self.app.settings["show_sidebar"] = self.show_sidebar.get()
         self.app.settings["show_info"] = self.show_info.get()

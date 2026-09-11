@@ -102,6 +102,10 @@ PALETTES = {"dark": DARK, "light": LIGHT}
 SIDEBAR_MIN = 190
 SIDEBAR_MAX = 900
 SIDEBAR_DEFAULT = 296
+#: Right dock (index and details panels) width limits, in pixels.
+DOCK_MIN = 220
+DOCK_MAX = 760
+DOCK_DEFAULT = 330
 
 #: Treeview style names for the file list. ``LIST_FLAT`` has no expander
 #: element; ``LIST_TREE`` keeps it, for a grouped multi-level listing.
@@ -291,7 +295,8 @@ def apply_theme(root: tk.Misc, palette: Palette) -> None:
     # The indicator element is dropped from the layout entirely - setting
     # `indicatorsize=0` still leaves a gap in the clam theme.
     for name in ("Segment.TRadiobutton", "Toggle.TCheckbutton", "Modal.TCheckbutton",
-                 "Transport.TCheckbutton"):
+                 "Transport.TCheckbutton", "Group.Toggle.TCheckbutton",
+                 "Group.Modal.TCheckbutton"):
         element = "Radiobutton" if "Radio" in name else "Checkbutton"
         style.layout(name, [
             (f"{element}.padding", {"sticky": "nswe", "children": [
@@ -323,6 +328,20 @@ def apply_theme(root: tk.Misc, palette: Palette) -> None:
     style.map("Modal.TCheckbutton",
               background=[("selected", p.accent), ("active", p.hover)],
               foreground=[("selected", p.accent_text), ("active", p.text)])
+
+    # The same three controls placed inside a raised toolbar group: ttk
+    # resolves "Group.X" back to "X" for layout and state maps, so only the
+    # resting background differs.
+    style.configure("Group.Modal.TCheckbutton", background=p.panel_alt,
+                    padding=(9, 5))
+    style.configure("Group.Toggle.TCheckbutton", background=p.panel_alt,
+                    padding=(9, 5))
+    style.configure("Group.Tool.TButton", background=p.panel_alt,
+                    padding=(9, 5))
+    style.map("Group.Tool.TButton",
+              background=[("pressed", p.accent), ("active", p.hover),
+                          ("disabled", p.panel_alt)],
+              foreground=[("pressed", p.accent_text), ("disabled", p.muted)])
 
     style.configure("Transport.TCheckbutton", background=p.panel_alt, foreground=p.muted,
                     padding=(8, 4), relief="flat", anchor="center")

@@ -83,8 +83,9 @@ DEFAULT_SETTINGS: dict = {
     "smooth": True,
     "transparency": "white",
     "open_fit": "optimal",
+    "dock_width": 330,
     "thumb_size": 24,
-    "density": "compact",
+    "density": "normal",
     "pdf_dpi": 150.0,
     "export_dpi": 300.0,
     "slideshow_secs": 4.0,
@@ -204,6 +205,10 @@ def load_settings() -> dict:
         values["ocr_variant"] = DEFAULT_SETTINGS["ocr_variant"]
     if values.get("open_fit") not in ("optimal", "width", "page", "reading"):
         values["open_fit"] = DEFAULT_SETTINGS["open_fit"]
+    try:
+        values["dock_width"] = max(220, min(760, int(values["dock_width"])))
+    except (KeyError, TypeError, ValueError):
+        values["dock_width"] = DEFAULT_SETTINGS["dock_width"]
     try:
         values["ocr_dpi"] = max(150, min(600, int(values["ocr_dpi"])))
     except (KeyError, TypeError, ValueError):

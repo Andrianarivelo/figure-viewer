@@ -43,8 +43,9 @@ class ReviewController:
 
     def build_toolbar(self, parent):
         """Keep the three common review actions beside the existing Edit button."""
-        group = ttk.Frame(parent, style="ToolbarGroup.TFrame")
-        group.pack(side="left", after=self.edit.edit_button, padx=(0, 8))
+        # ``parent`` is the viewer's edit group: Edit, Highlight, Comment and
+        # Review read as one raised cluster.
+        group = parent
         for mode, title, icon, tip in (
                 ("highlight", "Highlight", "highlighter",
                  "Highlight selected text, or enable repeated drag highlighting (Ctrl+Alt+H)"),
@@ -53,13 +54,15 @@ class ReviewController:
             button = ttk.Checkbutton(
                 group, text=title, image=self.window.icons.get(icon),
                 compound="left", variable=self.mode, onvalue=mode, offvalue="",
-                style="Modal.TCheckbutton", takefocus=False,
+                style="Group.Modal.TCheckbutton", takefocus=False,
                 command=lambda m=mode: self.action(m, toggled=True))
             button.pack(side="left")
             bind_tooltip(button, tip, self.palette)
             self._buttons.append(button)
         button = toolbar_button(group, "Review", self.toggle_panel, self.palette,
-                                "Search, edit and export all PDF comments (Ctrl+Alt+R)")
+                                "Search, edit and export all PDF comments (Ctrl+Alt+R)",
+                                style="Group.Tool.TButton",
+                                image=self.window.icons.get("select"))
         button.pack(side="left")
         self._buttons.append(button)
 
