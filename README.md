@@ -633,5 +633,15 @@ figureviewer/
 Settings remain in `%APPDATA%\FigureViewerApp\settings.json` so the rename does
 not discard preferences or break single-instance handoff with an older launcher.
 
-Generated branding lives in `assets/figure-viewer-mark.png`; the 256 px runtime
-copy and `figure-viewer.ico` are derived from that master.
+The editable app icon is `assets/figure-viewer-mark.svg`, made entirely from
+vector paths and gradients. Its layered figure sheets, cyan signal and amber
+focal point are exported with transparent corners at 256, 512, 1024, 2048 and
+4096 pixels. `assets/figure-viewer-mark.png` is the 4096 px export; the viewer
+loads the 256 px copy. `figure-viewer.ico` includes Windows sizes from 16 to
+256 px for the app, shortcuts and file associations.
+
+To regenerate the assets, install the development-only dependencies with
+`python -m pip install -r requirements-icon.txt`, then run `python build_icon.py`
+or double-click `Build Icon.bat`. The source SVG is the single editable master.
+Existing packaged executables need a rebuild to embed the new icon; the source
+viewer picks up the new PNG and ICO after restarting.

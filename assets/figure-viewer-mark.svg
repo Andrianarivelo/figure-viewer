@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024"
+     viewBox="0 0 1024 1024" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">FigView</title>
+  <desc id="desc">Layered figure sheets on an indigo tile, with a luminous cyan
+    signal and an amber focal point. Scalable vector artwork with transparent corners.</desc>
+  <defs>
+    <linearGradient id="body" x1="130" y1="70" x2="862" y2="990" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#283965"/><stop offset=".45" stop-color="#111C38"/>
+      <stop offset="1" stop-color="#080E21"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="180" y1="48" x2="850" y2="1000" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#A6C1EE" stop-opacity=".65"/>
+      <stop offset=".38" stop-color="#637BD0" stop-opacity=".15"/>
+      <stop offset="1" stop-color="#747CFA" stop-opacity=".55"/>
+    </linearGradient>
+    <radialGradient id="halo" cx=".84" cy=".87" r=".76">
+      <stop stop-color="#4E43C5" stop-opacity=".5"/>
+      <stop offset="1" stop-color="#314DB5" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="violet" x1="680" y1="149" x2="340" y2="812" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#BFACFF"/><stop offset=".42" stop-color="#8374EC"/>
+      <stop offset="1" stop-color="#4449B3"/>
+    </linearGradient>
+    <linearGradient id="cyan" x1="160" y1="311" x2="600" y2="917" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#70EDDC"/><stop offset=".6" stop-color="#249BAF"/>
+      <stop offset="1" stop-color="#21548B"/>
+    </linearGradient>
+    <linearGradient id="paper" x1="291" y1="219" x2="747" y2="838" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/><stop offset=".47" stop-color="#E8F3FF"/>
+      <stop offset="1" stop-color="#ABBCE8"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="274" y1="240" x2="712" y2="828" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/><stop offset="1" stop-color="#CBDAFF" stop-opacity=".4"/>
+    </linearGradient>
+    <linearGradient id="screen" x1="336" y1="308" x2="675" y2="732" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#192C4C"/><stop offset="1" stop-color="#13203E"/>
+    </linearGradient>
+    <linearGradient id="signal" x1="335" y1="660" x2="703" y2="430" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6D8EFF"/><stop offset=".46" stop-color="#41D9EE"/>
+      <stop offset="1" stop-color="#ABFFE0"/>
+    </linearGradient>
+    <linearGradient id="area" x1="490" y1="420" x2="490" y2="715" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#56DDD9" stop-opacity=".26"/>
+      <stop offset="1" stop-color="#5DC5F5" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="focus" x1="640" y1="382" x2="689" y2="441" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFF4C5"/><stop offset=".45" stop-color="#FFC46B"/>
+      <stop offset="1" stop-color="#F28A5F"/>
+    </linearGradient>
+  </defs>
+
+  <!-- A continuous rounded tile, with vector-only shadow and restrained rim. -->
+  <rect x="43" y="55" width="938" height="940" rx="221" fill="#020614" fill-opacity=".12"/>
+  <rect x="47" y="53" width="930" height="930" rx="217" fill="#04091A" fill-opacity=".3"/>
+  <rect x="48" y="40" width="928" height="928" rx="216" fill="url(#body)"/>
+  <rect x="48" y="40" width="928" height="928" rx="216" fill="url(#halo)"/>
+  <rect x="51" y="43" width="922" height="922" rx="213" stroke="url(#rim)" stroke-width="6"/>
+
+  <!-- Offset sheets create a recognizable silhouette without tiny details. -->
+  <g transform="rotate(12 573 496)">
+    <rect x="325" y="158" width="502" height="652" rx="68" fill="#030A20" fill-opacity=".3"/>
+    <rect x="320" y="144" width="502" height="652" rx="68" fill="url(#violet)"/>
+    <path d="M388 150H754C788 150 816 178 816 212V724" stroke="#D9CCFF" stroke-opacity=".55" stroke-width="5" stroke-linecap="round"/>
+  </g>
+  <g transform="rotate(-11 438 571)">
+    <rect x="190" y="267" width="503" height="638" rx="69" fill="#020D22" fill-opacity=".38"/>
+    <rect x="182" y="251" width="503" height="638" rx="69" fill="url(#cyan)"/>
+    <path d="M188 320C188 286 216 257 251 257H610" stroke="#BEFFF0" stroke-opacity=".65" stroke-width="5" stroke-linecap="round"/>
+  </g>
+
+  <!-- The main figure card. Its dark inset is the visual focus of the mark. -->
+  <rect x="253" y="247" width="524" height="610" rx="77" fill="#050C24" fill-opacity=".22"/>
+  <rect x="250" y="237" width="524" height="610" rx="77" fill="#050C24" fill-opacity=".32"/>
+  <rect x="244" y="219" width="524" height="610" rx="77" fill="url(#paper)"/>
+  <rect x="248" y="223" width="516" height="602" rx="73" stroke="url(#edge)" stroke-width="5"/>
+  <rect x="284" y="294" width="444" height="462" rx="41" fill="#7083AD" fill-opacity=".35"/>
+  <rect x="284" y="288" width="444" height="462" rx="41" fill="url(#screen)"/>
+  <path d="M325 290H687C708 290 726 308 726 329" stroke="#4B6488" stroke-width="3"/>
+  <rect x="287" y="251" width="111" height="9" rx="4.5" fill="#687FA4" fill-opacity=".72"/>
+  <circle cx="689" cy="256" r="7" fill="#7289B0"/>
+
+  <!-- A gentle reference line and filled signal give the figure depth. -->
+  <path d="M330 675H682" stroke="#7E9CBE" stroke-opacity=".24" stroke-width="3" stroke-linecap="round"/>
+  <path d="M333 638C389 638 401 461 463 461C523 461 526 567 577 567C618 567 628 412 671 412V713H333Z" fill="url(#area)"/>
+  <path d="M333 638C389 638 401 461 463 461C523 461 526 567 577 567C618 567 628 412 671 412"
+        stroke="#42D8E6" stroke-opacity=".08" stroke-width="54" stroke-linecap="round"/>
+  <path d="M333 638C389 638 401 461 463 461C523 461 526 567 577 567C618 567 628 412 671 412"
+        stroke="#50E4EC" stroke-opacity=".12" stroke-width="37" stroke-linecap="round"/>
+  <path d="M333 638C389 638 401 461 463 461C523 461 526 567 577 567C618 567 628 412 671 412"
+        stroke="url(#signal)" stroke-width="22" stroke-linecap="round"/>
+  <circle cx="671" cy="412" r="42" fill="#FFD398" fill-opacity=".09"/>
+  <circle cx="671" cy="412" r="30" fill="#12243D"/>
+  <circle cx="671" cy="412" r="23" fill="url(#focus)"/>
+  <circle cx="665" cy="406" r="6" fill="#FFF9DC" fill-opacity=".75"/>
+  <path d="M444 790H568" stroke="#768BB6" stroke-width="8" stroke-linecap="round" stroke-opacity=".65"/>
+</svg>

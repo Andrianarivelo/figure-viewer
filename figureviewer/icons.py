@@ -6,7 +6,7 @@ boxes. These icons are drawn from simple geometry into oversampled Pillow
 images, then reduced once for clean antialiasing. They remain deterministic,
 lightweight, theme-aware, and sharp at high DPI.
 
-The generated application mark is intentionally separate. It provides the
+The vector application mark is intentionally separate. It provides the
 brand asset, while small functional controls stay code-native because that is
 the reliable way to make a coherent scalable icon set.
 """
@@ -41,7 +41,7 @@ class IconFactory:
         return photo
 
     def brand(self, path: Path, size: int = 22) -> Optional[ImageTk.PhotoImage]:
-        """Load the generated master mark and reduce it for the menu bar."""
+        """Load the exported vector mark and reduce it for the menu bar."""
         pixels = max(16, int(round(size * min(self.scale, 1.5))))
         key = ("brand", str(path), pixels)
         cached = self._cache.get(key)
