@@ -49,6 +49,7 @@ $AppDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Icon   = Join-Path $AppDir "figure-viewer.ico"
 
 . (Join-Path $AppDir "viewer_python.ps1")
+. (Join-Path $AppDir "viewer_shell.ps1")
 
 # --------------------------------------------------------------- identity
 $AppKey       = "FigView"                            # public Windows app name
@@ -106,8 +107,10 @@ $Launch = Resolve-ViewerLaunch -AppDir $AppDir -SourceScript "figure_viewer_app.
 $Python = $Launch.Python
 $Command = ('"{0}" {1} "%1"' -f $Launch.Target, $Launch.Arguments)
 if ($Launch.IsFrozen) { $Command = '"{0}" "%1"' -f $Launch.Target }
-# Embedded executable icons survive one-file extraction cleanup.
-if ($Launch.IsFrozen -or -not (Test-Path -LiteralPath $Icon)) { $Icon = $Launch.Target }
+# A persistent content-addressed icon also survives one-file extraction cleanup.
+$PersistentIcon = Resolve-ViewerShellIcon -AppDir $AppDir
+if ($PersistentIcon) { $Icon = $PersistentIcon }
+elseif ($Launch.IsFrozen -or -not (Test-Path -LiteralPath $Icon)) { $Icon = $Launch.Target }
 
 Write-Host "FigView file-type registration"
 Write-Host "  app dir  $AppDir"
@@ -229,12 +232,7 @@ if ($null -ne $registered -and
 # Without this, Explorer keeps showing the old icons and the old "Open with"
 # list until the next sign-in.
 try {
-    Add-Type -Namespace FVShell -Name Notify -MemberDefinition @'
-[System.Runtime.InteropServices.DllImport("shell32.dll")]
-public static extern void SHChangeNotify(int eventId, uint flags, System.IntPtr item1, System.IntPtr item2);
-'@ -ErrorAction Stop
-    # SHCNE_ASSOCCHANGED (0x08000000), SHCNF_IDLIST (0x0000)
-    [FVShell.Notify]::SHChangeNotify(0x08000000, 0, [IntPtr]::Zero, [IntPtr]::Zero)
+    Send-ViewerShellIconChange
 } catch {
     Write-Host "  (could not refresh the shell association cache; sign out and in if icons look stale)"
 }

@@ -1,4 +1,4 @@
-# FigView 1.0.0
+# FigView 1.1.0
 
 A fast, themed viewer **and PDF workstation** for images, videos, and PDFs on
 Windows. Open one file and only that file enters the list; open more files and
@@ -15,7 +15,7 @@ nothing ever leaves the machine.
 
 ### Text highlights and comments
 
-The source version now exposes **Highlight**, **Comment**, and **Review** beside
+FigView exposes **Highlight**, **Comment**, and **Review** beside
 Edit in the main toolbar. Select text across one or more lines, then click
 Highlight or Comment. Clicking either tool without a selection enables repeated
 drag annotations; press Escape to stop. Scanned pages require OCR first.
@@ -33,18 +33,17 @@ a highlight with its comment in one step. **Ctrl+S** or **Save PDF** writes
 standard PDF annotations to disk; changes remain unsaved until then. The quoted
 passage is stored in the annotation's Subject field and the comment in Contents.
 
-Launch with `FigView.bat` to use these source changes. The previously published
-1.0.0 executables do not include them until rebuilt.
+These tools are included in the 1.1.0 Windows downloads and the source launcher.
 
 ---
 
 ## Windows executable release
 
-Download version 1 from the [GitHub release](https://github.com/Andrianarivelo/figure-viewer/releases/tag/v1.0.0):
+Download version 1.1.0 from the [GitHub release](https://github.com/Andrianarivelo/figure-viewer/releases/tag/v1.1.0):
 
 - **Recommended for faster startup:** extract the entire portable ZIP and run `FigView/FigView.exe`.
   Keep its `_internal` folder beside the executable.
-- **Standalone convenience:** run `FigView-v1.0.0-windows-x64.exe` directly.
+- **Standalone convenience:** run `FigView-v1.1.0-windows-x64.exe` directly.
   It unpacks dependencies on every launch. A single local release check took
   about 19-21 seconds, versus 1-2 seconds for the portable version.
 
@@ -57,6 +56,15 @@ refer to the earlier source-only versions.
 For a portable desktop shortcut, run
 `powershell -ExecutionPolicy Bypass -File .\FigView\_internal\install_shortcuts.ps1`.
 Use **Tools > Set as Default PDF Reader** for Windows file associations.
+
+If Explorer or existing shortcuts still show the previous icon, run
+`powershell -ExecutionPolicy Bypass -File .\FigView\_internal\refresh_windows_icons.ps1`.
+For a source checkout, run the same script from the project folder. Add `-WhatIf`
+to preview. It updates existing FigView icon references using a persistent,
+versioned icon path and notifies Windows. File-opening commands and your chosen
+default apps are preserved. Restart an already-running viewer to reload its
+taskbar icon. Fresh shortcut installation and file-type registration use the
+versioned icon automatically.
 
 ### Build from source
 
@@ -657,5 +665,5 @@ loads the 256 px copy. `figure-viewer.ico` includes Windows sizes from 16 to
 To regenerate the assets, install the development-only dependencies with
 `python -m pip install -r requirements-icon.txt`, then run `python build_icon.py`
 or double-click `Build Icon.bat`. The source SVG is the single editable master.
-Existing packaged executables need a rebuild to embed the new icon; the source
-viewer picks up the new PNG and ICO after restarting.
+The 1.1.0 executables embed this new icon; older executables retain their original
+embedded artwork. The source viewer loads updated PNG and ICO assets on restart.

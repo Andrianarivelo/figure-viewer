@@ -29,8 +29,11 @@ $Icon     = Join-Path $AppDir "figure-viewer.ico"
 # place. The probing itself lives in viewer_python.ps1 so that this script and
 # register_file_types.ps1 can never disagree about which Python to use.
 . (Join-Path $AppDir "viewer_python.ps1")
+. (Join-Path $AppDir "viewer_shell.ps1")
 
 $Launch = Resolve-ViewerLaunch -AppDir $AppDir
+$PersistentIcon = Resolve-ViewerShellIcon -AppDir $AppDir
+if ($PersistentIcon) { $Icon = $PersistentIcon }
 if (-not (Test-Path -LiteralPath $Icon)) { $Icon = $Launch.Target }
 
 $Shell     = New-Object -ComObject WScript.Shell
@@ -48,6 +51,7 @@ function New-ViewerShortcut {
     $link.Description      = $Description
     $link.WindowStyle      = 1
     $link.Save()
+    Send-ViewerShellIconChange -Paths @($Path)
     Write-Host "  created  $Path"
 }
 

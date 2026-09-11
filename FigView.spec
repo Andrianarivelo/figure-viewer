@@ -10,7 +10,10 @@ from PyInstaller.utils.win32.versioninfo import (
 )
 
 ROOT = Path(SPECPATH)
-VERSION = "1.0.0"
+sys.path.insert(0, str(ROOT))
+from figureviewer import APP_VERSION as VERSION
+
+VERSION_PARTS = tuple(int(part) for part in VERSION.split(".")) + (0,)
 # A venv over conda can expose older MinGW OpenSSL DLLs earlier on PATH.
 # Pin Python's matching native SSL pair explicitly when building over conda.
 binaries = []
@@ -21,7 +24,8 @@ for name in ("libssl-3-x64.dll", "libcrypto-3-x64.dll"):
 datas = [(str(ROOT / "assets"), "assets"),
          (str(ROOT / "figure-viewer.ico"), ".")]
 for name in ("register_file_types.ps1", "unregister_file_types.ps1",
-             "install_shortcuts.ps1", "viewer_python.ps1"):
+             "install_shortcuts.ps1", "viewer_python.ps1", "viewer_shell.ps1",
+             "refresh_windows_icons.ps1"):
     datas.append((str(ROOT / name), "."))
 # Preserve templates, trust resources and license/metadata files that dynamic
 # imports cannot discover by following Python bytecode alone.
@@ -32,7 +36,7 @@ for distribution in ("Pillow", "PyMuPDF", "opencv-python-headless", "numpy",
     datas += copy_metadata(distribution, recursive=True)
 
 version = VSVersionInfo(
-    ffi=FixedFileInfo(filevers=(1, 0, 0, 0), prodvers=(1, 0, 0, 0),
+    ffi=FixedFileInfo(filevers=VERSION_PARTS, prodvers=VERSION_PARTS,
                       mask=0x3F, flags=0, OS=0x40004, fileType=1,
                       subtype=0, date=(0, 0)),
     kids=[StringFileInfo([StringTable("040904B0", [

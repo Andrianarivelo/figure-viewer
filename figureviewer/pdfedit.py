@@ -821,7 +821,13 @@ class EditSession:
         if props.get("opacity") is not None:
             annot.set_opacity(float(props["opacity"]))
         if props.get("contents") is not None:
-            annot.set_info(content=props["contents"])
+            if props["contents"] == "":
+                # PyMuPDF treats set_info(content="") as "leave unchanged".
+                # Write the standard empty PDF string so explicit clearing and
+                # undoing the first comment both restore genuinely empty text.
+                self.document._doc.xref_set_key(annot.xref, "Contents", _pdf_string(""))
+            else:
+                annot.set_info(content=props["contents"])
         kwargs = {}
         if props.get("fontsize") is not None:
             kwargs["fontsize"] = float(props["fontsize"])

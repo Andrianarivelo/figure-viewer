@@ -83,6 +83,40 @@ class ReviewBackendTests(unittest.TestCase):
         legacy = E.AnnotInfo(0, 1, "uid", E.TYPE_NOTE, (0, 0, 1, 1), "note")
         self.assertEqual(legacy.subject, "")
 
+    def test_empty_comment_edit_and_undo_survive_save_and_redo(self) -> None:
+        """Clearing /Contents must work both explicitly and when undoing an edit."""
+        comment = "Révision α 中文 🧠\nDeuxième ligne"
+        subject = "Original selected text"
+        uid = self.session.add_markup(0, self.quads, E.TYPE_HIGHLIGHT,
+                                      (1, 0.8, 0.2), 0.35, subject=subject)
+
+        def assert_comment(expected):
+            """Check live metadata, serialized metadata and untouched geometry."""
+            info, = self.session.annots_on(0)
+            self.assertEqual(info.contents, expected)
+            self.assertEqual(info.subject, subject)
+            self.assertEqual(info.uid, uid)
+            with D.fitz.open(stream=self.session.save_bytes(), filetype="pdf") as saved:
+                page = saved[0]
+                annot, = list(page.annots())
+                self.assertEqual(annot.info["content"], expected)
+                self.assertEqual(annot.info["subject"], subject)
+                self.assertEqual(len(annot.vertices), 8)
+            self.assertEqual(self.path.read_bytes(), self.original)
+
+        self.session.set_annot_props(0, uid, contents=comment)
+        assert_comment(comment)
+        self.session.undo()
+        assert_comment("")
+        self.session.redo()
+        assert_comment(comment)
+        self.session.set_annot_props(0, uid, contents="")
+        assert_comment("")
+        self.session.undo()
+        assert_comment(comment)
+        self.session.redo()
+        assert_comment("")
+
 
 if __name__ == "__main__":
     unittest.main()

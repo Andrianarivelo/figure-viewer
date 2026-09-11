@@ -1,45 +1,59 @@
-# FigView 1.0.0
+﻿# FigView 1.1.0
 
-First packaged Windows x64 release, including the latest startup and
-multiple-file opening improvements.
+A new app icon, direct PDF review tools, and a more comfortable document-reading
+workspace. Includes the improvements made since 1.0.0.
 
 ## Downloads
 
-- **Recommended:** `FigView-v1.0.0-windows-x64-portable.zip`. Extract everything
-  and run `FigView/FigView.exe`, keeping `_internal` beside it.
-- `FigView-v1.0.0-windows-x64.exe`: standalone convenience download. Unpacks
-  dependencies on every launch, so it starts more slowly.
-- `SHA256SUMS.txt`: SHA256 hashes for both downloads.
+- **Recommended:** `FigView-v1.1.0-windows-x64-portable.zip`. Extract the whole
+  archive and run `FigView/FigView.exe`, keeping `_internal` beside it.
+- `FigView-v1.1.0-windows-x64.exe`: standalone convenience download. It extracts
+  dependencies at launch and starts more slowly than the portable app.
+- `SHA256SUMS.txt`: checksums for both downloads.
 
-Python, Pillow, PyMuPDF, OpenCV, Office exporters and certificate-signing
-dependencies are included. OCR language packs are downloaded on demand through
-the application. Video playback remains silent, as in the source application.
-Existing settings and recent-file history are preserved.
+Both builds include Python and the image, PDF, video, export and signing
+libraries. Existing settings and recent files are preserved. OCR language
+packs download on demand; video playback remains silent.
 
-## Included improvements
+## New and improved
 
-- Batched multi-file opening with one file-list and recent-menu refresh.
-- Background thumbnails that do not queue ahead of selected-file loading.
-- Coordination between simultaneous file launches and stale-load cancellation.
-- Windows shortcuts and file associations that target the packaged executable.
-- Writable startup error logs in the existing user settings directory.
+- A redesigned layered figure icon, with a true SVG master, transparent PNGs
+  up to 4096 pixels and a multi-size Windows ICO embedded in both executables.
+- Direct text highlighting and anchored comments, five colors, opacity control,
+  repeated drag highlighting, undo/redo, searchable review and CSV export.
+- Selectable PDF text and OCR-backed image text, including rotated PDF pages.
+- A docked document index, resizable right-hand panels, a tidier toolbar and
+  automatic opening zoom that uses the available viewing area.
+- Clickable PDF hyperlinks and printed web addresses.
+- PDF editing fixes and improved layout and navigation behavior.
 
-## Build and verification
+## Updating Windows icons
 
-The source includes `FigView.spec`, `build_release.py`, `Build Release.bat` and
-the complete pinned build dependency list in `requirements-build.txt`.
-The release builder tests both binaries with Python removed from their search
-path. The executable's `--self-test report.json` command uses temporary fixtures
-to check GUI startup, image/PDF rendering, multiple opening, authenticated IPC,
-video decoding, Office/text exports, and PDF signing integrity.
+New shortcut installation and file-type registration store the icon at a
+persistent path keyed by its content, so Windows can distinguish updated artwork.
+This also keeps icon files available after standalone executable extraction ends.
 
-Validation on Windows 11 x64: 171 source tests passed, and both packaged
-executables passed all six smoke checks with Python removed from PATH.
-Archive integrity and SHA256 checksums were verified after packaging.
-Normal command-line launches also passed for both builds: simultaneous starts
-created one viewer, all three opened files were preserved, and shutdown was clean.
-In this single local check, portable startup/handoff took about 1-2 seconds;
-standalone startup/handoff took 19-21 seconds, including dependency extraction.
+For existing Explorer associations and shortcuts, run this from the extracted
+portable folder's parent directory:
 
-This is the first public executable version. Earlier development versions in
-the source documentation used a separate 3.x numbering sequence.
+```powershell
+powershell -ExecutionPolicy Bypass -File .\FigView\_internal\refresh_windows_icons.ps1
+```
+
+Add `-WhatIf` to preview. The utility changes existing FigView icon references
+and notifies the Windows shell. It preserves default-app choices, document
+opening commands and shortcut arguments. Restart any already-running older
+viewer to load the new taskbar icon. Use **Tools > Set as Default PDF Reader**
+from the new executable to change which installation opens PDFs.
+
+## Verification
+
+The source test suite covers editing, selection, shell integration and startup.
+Both built executables undergo isolated smoke checks with Python removed from
+PATH, covering GUI startup, batched opening, IPC, PDF review and icon resources,
+video decoding, Office/text exports and certificate-signature integrity.
+Build reports and SHA256 checksums accompany the release downloads.
+
+Rebuild with `python build_release.py` or `Build Release.bat`. Dependencies are
+pinned in `requirements-build.txt`; the SVG exporter has its own development-only
+dependency file, `requirements-icon.txt`.

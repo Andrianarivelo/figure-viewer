@@ -146,6 +146,42 @@ def run(output: Path) -> int:
 
             check("ipc_and_pdf", open_via_ipc)
 
+            def review_and_brand():
+                """Verify the shipped review UI, PDF metadata and icon resources."""
+                window.text.select_all()
+                quote = window.text.selected_text()
+                require(bool(quote), "Selectable PDF text is empty")
+                uid = window.edit.review.annotate_selection("highlight")
+                require(bool(uid), "Direct highlight creation failed")
+                session = window.edit.session
+                comment = "Review: caf\u00e9, \u03b1 and \u4e2d\u6587"
+                session.set_annot_props(0, uid, contents=comment)
+                session.undo()
+                require(session.annots_on(0)[0].contents == "", "Comment undo failed")
+                session.redo()
+                window.edit.review.open_panel()
+                wait_for(lambda: window.edit.review._job is None
+                         and len(window.edit.review.rows) == 1)
+                with fitz.open(stream=session.save_bytes(), filetype="pdf") as saved:
+                    page = saved[0]
+                    annot = next(page.annots())
+                    require(annot.info["content"] == comment, "Saved comment changed")
+                    require(annot.info["subject"] == quote, "Saved quotation changed")
+                with Image.open(application.app_dir / "assets" / "figure-viewer-mark-256.png") as icon:
+                    require(icon.size == (256, 256) and icon.mode == "RGBA",
+                            "Runtime icon resource is invalid")
+                with Image.open(application.app_dir / "figure-viewer.ico") as icon:
+                    require((16, 16) in icon.info["sizes"] and (256, 256) in icon.info["sizes"],
+                            "Windows icon sizes missing")
+                window.edit.review.close_panel()
+                # Restore the temporary fixture to a clean session before the
+                # remaining checks and normal shutdown, which need no dialogs.
+                session.undo()
+                session.undo()
+                return "Highlight, Unicode comment, undo/redo, review index, PDF save and icons"
+
+            check("pdf_review_and_brand", review_and_brand)
+
             def video_decode():
                 """Generate a tiny AVI and decode through the app video service."""
                 import cv2
