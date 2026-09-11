@@ -250,12 +250,21 @@ pages included. The panel appears only when the document has an outline and
 shares the right dock with the details panel; drag the dock's edge to resize
 it (double-click resets), and the width is remembered.
 
-**Toolbar layout.** The action bar is grouped by purpose: zoom and rotation,
-capture (Snip, OCR), editing (Edit, Highlight, Comment, Review), and, at the
-far right where the panels themselves live, the Files, Index and Details
-toggles with the auto-reload and auto-hide preferences beside them. Panels
-carry a hairline under their header, and the file list opens at the normal
-density (View > List Density still offers compact and comfortable).
+**Reader-first layout.** The action bar is grouped by purpose: zoom and
+rotation, capture (Snip, OCR), editing (Edit, Highlight, Comment, Review),
+and, at the far right where the panels themselves live, the Files, Index and
+Details toggles with the auto-reload and auto-hide preferences beside them.
+Only the two modal states (Snip, Edit) carry a text label; everything else
+is an icon with a tooltip. When files were opened directly there is no folder
+to type, so the path box gives way to a chip naming the file's folder (click
+it to browse that folder), and a single opened file starts with the file list
+collapsed until a second file or a folder arrives. The Images / PDF / Video /
+All filter sits in the Files panel header, next to the list it filters. The
+overview map appears only while the page is larger than the viewport and
+fades after the view has been still for a moment. The canvas is a mid-dark
+neutral rather than black, the status bar shows the file name and its
+position in the list (pixel size, paper and dates live in Details), and the
+file list opens at the normal density.
 
 **Redaction burns content out.** Applying redactions removes the text, blanks
 the covered pixels of images (the rest of the picture survives) and drops

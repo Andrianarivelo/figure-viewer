@@ -51,18 +51,20 @@ class ReviewController:
                  "Highlight selected text, or enable repeated drag highlighting (Ctrl+Alt+H)"),
                 ("comment", "Comment", "note",
                  "Attach a comment to selected text (Ctrl+Alt+M)")):
+            # Icon-only; the title survives in the tooltip. Only the two
+            # modal states of the viewer (Snip, Edit) keep a text label.
             button = ttk.Checkbutton(
-                group, text=title, image=self.window.icons.get(icon),
-                compound="left", variable=self.mode, onvalue=mode, offvalue="",
+                group, image=self.window.icons.get(icon),
+                compound="image", variable=self.mode, onvalue=mode, offvalue="",
                 style="Group.Modal.TCheckbutton", takefocus=False,
                 command=lambda m=mode: self.action(m, toggled=True))
             button.pack(side="left")
-            bind_tooltip(button, tip, self.palette)
+            bind_tooltip(button, f"{title}: {tip}", self.palette)
             self._buttons.append(button)
-        button = toolbar_button(group, "Review", self.toggle_panel, self.palette,
-                                "Search, edit and export all PDF comments (Ctrl+Alt+R)",
-                                style="Group.Tool.TButton",
-                                image=self.window.icons.get("select"))
+        button = toolbar_button(group, "", self.toggle_panel, self.palette,
+                                "Review: search, edit and export all PDF comments "
+                                "(Ctrl+Alt+R)", style="Group.Tool.TButton",
+                                image=self.window.icons.get("select"), compound="image")
         button.pack(side="left")
         self._buttons.append(button)
 

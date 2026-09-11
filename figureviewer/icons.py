@@ -126,6 +126,10 @@ def _draw_icon(name: str, size: int, colour: str, accent: str) -> Image.Image:
         line(((15, 4), (20, 4), (20, 9)))
         line(((4, 15), (4, 20), (9, 20)))
         line(((20, 15), (20, 20), (15, 20)))
+    elif name == "autohide":
+        # Clock face: the list hides itself after a while.
+        draw.ellipse((*pt(4, 4), *pt(20, 20)), outline=colour, width=stroke)
+        line(((12, 7.5), (12, 12.5), (15.5, 14.5)), fill=accent)
     elif name == "auto_fit":
         # Two side bars with a double-headed arrow: fill the width.
         line(((4, 5), (4, 19)))

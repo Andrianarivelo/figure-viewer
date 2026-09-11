@@ -60,9 +60,11 @@ DARK = Palette(
     accent_text="#ffffff",
     hover="#232937",
     select="#26314a",
-    canvas="#0a0c10",
-    canvas_alt="#12151b",
-    shadow="#05070a",
+    # Mid-dark neutral, not black: a white page on a black ground glows and
+    # tires the eye; readers settle on a tone two steps above the panels.
+    canvas="#1b1f28",
+    canvas_alt="#242935",
+    shadow="#0a0c11",
     ok="#4ade80",
     media="#22d3ee",
     warn="#fbbf24",
@@ -231,6 +233,12 @@ def apply_theme(root: tk.Misc, palette: Palette) -> None:
     style.configure("Panel.TLabel", background=p.panel, foreground=p.text)
     style.configure("Muted.TLabel", background=p.panel, foreground=p.muted, font="FVsmall")
     style.configure("Section.TLabel", background=p.panel, foreground=p.muted, font="FVuiBold")
+    # The folder chip that replaces the path box when files were opened
+    # explicitly: a quiet pill, clickable, never an empty text field.
+    style.configure("Chip.TLabel", background=p.panel_alt, foreground=p.muted,
+                    font="FVsmall", padding=(10, 5))
+    style.map("Chip.TLabel", background=[("active", p.hover)],
+              foreground=[("active", p.text)])
     style.configure("Status.TLabel", background=p.panel, foreground=p.muted, font="FVsmall")
     style.configure("Mono.TLabel", background=p.panel, foreground=p.muted, font="FVmono")
     style.configure("Accent.TLabel", background=p.panel, foreground=p.accent, font="FVuiBold")

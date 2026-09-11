@@ -68,7 +68,10 @@ class ViewerWindowVideoTests(unittest.TestCase):
                     self.assertEqual(window.current.kind, D.KIND_VIDEO)
                     self.assertEqual([entry.path for entry in window.entries], [video_path])
                     self.assertEqual(window.folder_var.get(), "")
-                    self.assertTrue(window.clear_folder_button.instate(["disabled"]))
+                    # Explicit files: the path box and its clear button give
+                    # way to the folder chip.
+                    self.assertFalse(window.clear_folder_button.winfo_ismapped())
+                    self.assertTrue(window.path_chip.winfo_ismapped())
                     self.assertEqual(application.settings["recent_files"][0], str(video_path))
                     self.assertTrue(window.video_controls.winfo_ismapped())
                     self.assertIn(window._video_session.snapshot().state,
@@ -164,7 +167,10 @@ class ViewerWindowVideoTests(unittest.TestCase):
                         time.sleep(0.005)
                     self.assertIsNone(window.explicit_paths)
                     self.assertEqual(window.folder_var.get(), str(root))
+                    application.root.update()
                     self.assertFalse(window.clear_folder_button.instate(["disabled"]))
+                    self.assertTrue(window.folder_entry.winfo_ismapped())
+                    self.assertFalse(window.path_chip.winfo_ismapped())
                     self.assertEqual({entry.path for entry in window.entries},
                                      {video_path, image_path})
                     self.assertEqual(application.settings["recent_folders"][0], str(root))
@@ -174,7 +180,9 @@ class ViewerWindowVideoTests(unittest.TestCase):
                     self.assertEqual(window.explicit_paths, [])
                     self.assertEqual(window.folder_var.get(), "")
                     self.assertEqual(window.entries, [])
-                    self.assertTrue(window.clear_folder_button.instate(["disabled"]))
+                    application.root.update()
+                    self.assertFalse(window.clear_folder_button.winfo_ismapped())
+                    self.assertEqual(window.path_chip_var.get(), "Opened files")
                 finally:
                     application.quit_all()
 

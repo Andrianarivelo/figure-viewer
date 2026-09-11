@@ -60,6 +60,8 @@ QUALITY_DELAY_MS = 110      # idle time before the high-quality repaint
 WATCH_MS = 1200             # folder polling interval
 TOAST_MS = 2400
 MINIMAP_MAX = 190
+#: The overview map fades this long after the view last moved.
+MINIMAP_FADE_MS = 1800
 VIDEO_FRAME_STEP_MIN = 1
 VIDEO_FRAME_STEP_MAX = 10_000
 SIDEBAR_AUTO_HIDE_MS = 5_000
@@ -328,6 +330,9 @@ class ViewerWindow(tk.Toplevel):
         self.slideshow_on = tk.BooleanVar(value=False)
         self.snip_mode = tk.BooleanVar(value=False)
         self.open_fit = tk.StringVar(value=str(settings.get("open_fit", "optimal")))
+        self._sidebar_auto_collapsed = False
+        self._auto_sidebar_key: Optional[tuple] = None
+        self._minimap_job = None
         self.video_loop = tk.BooleanVar(value=bool(settings.get("video_loop", False)))
         self.video_autoplay = tk.BooleanVar(value=bool(settings.get("video_autoplay", True)))
         self.video_frame_step = tk.IntVar(value=max(
@@ -437,20 +442,22 @@ class ViewerWindow(tk.Toplevel):
             command=self.clear_folder_path)
         self.clear_folder_button.grid(row=0, column=3, padx=(2, 8))
         bind_tooltip(self.clear_folder_button, "Clear folder path", p)
-        if self.explicit_paths is not None:
-            self.clear_folder_button.state(["disabled"])
 
-        segment = ttk.Frame(bar, style="Card.TFrame", padding=1)
-        segment.grid(row=0, column=4)
-        for label, value, tip in (("Images", D.FILTER_IMAGES, "Show images only  (Ctrl+1)"),
-                                  ("PDF", D.FILTER_DOCS, "Show PDF and vector documents  (Ctrl+2)"),
-                                  ("Video", D.FILTER_VIDEOS, "Show videos only  (Ctrl+3)"),
-                                  ("All", D.FILTER_ALL, "Show everything  (Ctrl+4)")):
-            radio = ttk.Radiobutton(segment, text=label, value=value, variable=self.kind_filter,
-                                    style="Segment.TRadiobutton", takefocus=False,
-                                    command=self.rescan)
-            radio.pack(side="left")
-            bind_tooltip(radio, tip, p)
+        # With explicitly opened files there is no folder to type, so the
+        # empty path box gives way to a chip naming the file's folder;
+        # clicking it opens that folder around the file.
+        self.path_chip_var = tk.StringVar(value="")
+        chip = ttk.Label(bar, textvariable=self.path_chip_var, style="Chip.TLabel",
+                         cursor="hand2", image=self.icons.get("folder", tone="muted"),
+                         compound="left")
+        chip.grid(row=0, column=2, sticky="w")
+        chip.grid_remove()
+        chip.bind("<Button-1>", lambda _e: self._open_chip_folder())
+        chip.bind("<Enter>", lambda _e: chip.state(["active"]))
+        chip.bind("<Leave>", lambda _e: chip.state(["!active"]))
+        self.path_chip = chip
+        self.path_chip_tip = bind_tooltip(chip, "Open the containing folder", p)
+        self._sync_path_controls()
 
         actionbar = ttk.Frame(bar, style="Toolbar.TFrame")
         actionbar.grid(row=1, column=0, columnspan=5, sticky="ew", pady=(6, 0))
@@ -490,10 +497,10 @@ class ViewerWindow(tk.Toplevel):
             command=self._snip_mode_changed)
         self.snip_button.pack(side="left")
         bind_tooltip(self.snip_button, "Drag a rectangle to copy that region  (S)", p)
-        ocr = toolbar_button(capture, "OCR", self.text.ocr_and_copy, p,
-                             "Read the text in this image or scanned page and copy it  "
+        ocr = toolbar_button(capture, "", self.text.ocr_and_copy, p,
+                             "OCR: read the text in this image or scanned page and copy it  "
                              "(Ctrl+Shift+T)", style="Group.Tool.TButton",
-                             image=self.icons.get("ocr"))
+                             image=self.icons.get("ocr"), compound="image")
         ocr.pack(side="left")
         self.ocr_button = ocr
 
@@ -505,42 +512,45 @@ class ViewerWindow(tk.Toplevel):
         # panels themselves live; preferences go just before them.
         panels = ttk.Frame(actionbar, style="ToolbarGroup.TFrame", padding=2)
         panels.pack(side="right")
+        # Icon-only: these toggle panels and preferences, they do not change
+        # what the mouse does, so a tooltip is enough and a label is noise.
         files = ttk.Checkbutton(
-            panels, text="Files", image=self.icons.get("files"), compound="left",
+            panels, image=self.icons.get("files"), compound="image",
             variable=self.show_sidebar, style="Group.Toggle.TCheckbutton", takefocus=False,
             command=self._sidebar_visibility_changed)
         files.pack(side="left")
         self.files_button = files
-        bind_tooltip(files, "Show or hide the file list  (Ctrl+B)", p)
+        bind_tooltip(files, "Files: show or hide the file list  (Ctrl+B)", p)
         index_button = ttk.Checkbutton(
-            panels, text="Index", image=self.icons.get("index"), compound="left",
+            panels, image=self.icons.get("index"), compound="image",
             variable=self.index.show_index, style="Group.Toggle.TCheckbutton",
             takefocus=False, command=self._apply_layout)
         index_button.pack(side="left")
         self.index_button = index_button
-        bind_tooltip(index_button, "Show the document's index (bookmarks) when it has one  "
+        bind_tooltip(index_button, "Index: the document's bookmarks, when it has any  "
                                    "(Ctrl+Shift+I)", p)
         details = ttk.Checkbutton(
-            panels, text="Details", image=self.icons.get("info"), compound="left",
+            panels, image=self.icons.get("info"), compound="image",
             variable=self.show_info, style="Group.Toggle.TCheckbutton",
             takefocus=False, command=self._apply_layout)
         details.pack(side="left")
         self.details_button = details
-        bind_tooltip(details, "Show file and page details  (Ctrl+I)", p)
+        bind_tooltip(details, "Details: file and page information  (Ctrl+I)", p)
 
-        prefs = ttk.Frame(actionbar, style="Toolbar.TFrame")
-        prefs.pack(side="right", padx=(0, 10))
-        auto = ttk.Checkbutton(prefs, text="Auto reload", image=self.icons.get("auto"),
-                               compound="left", variable=self.auto_reload,
-                               style="Toggle.TCheckbutton", takefocus=False)
-        auto.pack(side="left", padx=(0, 4))
-        bind_tooltip(auto, "Reload the image automatically when the file changes on disk", p)
+        prefs = ttk.Frame(actionbar, style="ToolbarGroup.TFrame", padding=2)
+        prefs.pack(side="right", padx=(0, 8))
+        auto = ttk.Checkbutton(prefs, image=self.icons.get("auto"), compound="image",
+                               variable=self.auto_reload,
+                               style="Group.Toggle.TCheckbutton", takefocus=False)
+        auto.pack(side="left")
+        bind_tooltip(auto, "Auto reload: refresh when the file changes on disk", p)
         auto_hide = ttk.Checkbutton(
-            prefs, text="Auto-hide list", variable=self.sidebar_auto_hide,
-            style="Toggle.TCheckbutton", takefocus=False,
-            command=self._sidebar_auto_hide_changed)
+            prefs, image=self.icons.get("autohide"), compound="image",
+            variable=self.sidebar_auto_hide, style="Group.Toggle.TCheckbutton",
+            takefocus=False, command=self._sidebar_auto_hide_changed)
         auto_hide.pack(side="left")
-        bind_tooltip(auto_hide, "Hide the file list five seconds after you stop using it", p)
+        bind_tooltip(auto_hide, "Auto-hide: tuck the file list away five seconds after "
+                                "you stop using it", p)
 
         # --- body: sidebar | canvas | info ---------------------------------
         body = ttk.Frame(self, style="TFrame")
@@ -700,8 +710,20 @@ class ViewerWindow(tk.Toplevel):
         ttk.Label(header, text="FILES", image=self.icons.get("files", tone="muted"),
                   compound="left", style="Section.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(header, textvariable=self.count_var, style="Muted.TLabel").grid(row=0, column=1, sticky="e")
+        # The kind filter lives with the list it filters.
+        segment = ttk.Frame(header, style="Card.TFrame", padding=1)
+        segment.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        for label, value, tip in (("Images", D.FILTER_IMAGES, "Show images only  (Ctrl+1)"),
+                                  ("PDF", D.FILTER_DOCS, "Show PDF and vector documents  (Ctrl+2)"),
+                                  ("Video", D.FILTER_VIDEOS, "Show videos only  (Ctrl+3)"),
+                                  ("All", D.FILTER_ALL, "Show everything  (Ctrl+4)")):
+            radio = ttk.Radiobutton(segment, text=label, value=value, variable=self.kind_filter,
+                                    style="Segment.TRadiobutton", takefocus=False,
+                                    command=self.rescan)
+            radio.pack(side="left")
+            bind_tooltip(radio, tip, p)
         ttk.Frame(header, style="Rule.TFrame", height=1).grid(
-            row=1, column=0, columnspan=2, sticky="ew", pady=(7, 0))
+            row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
 
         search = ttk.Entry(frame, textvariable=self.search_var)
         search.grid(row=1, column=0, sticky="ew", pady=(8, 8))
@@ -736,20 +758,10 @@ class ViewerWindow(tk.Toplevel):
         # levels of nesting still read as structure rather than more entries.
         self.tree.tag_configure("group", foreground=self.palette.muted, font="FVuiBold")
 
-        actions = ttk.Frame(frame, style="Panel.TFrame")
-        actions.grid(row=3, column=0, sticky="ew", pady=(8, 0))
-        for index in range(3):
-            actions.columnconfigure(index, weight=1)
-        toolbar_button(actions, "Copy", self.copy_image, p,
-                       "Copy the full-resolution image or current video frame  (Ctrl+C)",
-                       image=self.icons.get("copy")).grid(row=0, column=0, sticky="ew", padx=(0, 3))
-        toolbar_button(actions, "Path", self.copy_path, p,
-                       "Copy the file path  (Ctrl+Shift+P)",
-                       image=self.icons.get("path")).grid(row=0, column=1, sticky="ew", padx=3)
-        toolbar_button(actions, "Open", self.open_default_app, p,
-                       "Open in the default application  (Enter)",
-                       image=self.icons.get("external")).grid(row=0, column=2, sticky="ew", padx=(3, 0))
-        for widget in (frame, search, holder, self.tree, actions):
+        # No footer buttons: Copy, Path and Open live in the Edit menu, the
+        # context menus and the shortcuts, and a row of them under the list
+        # only competed with the list for attention.
+        for widget in (frame, search, holder, self.tree):
             widget.bind("<Motion>", self._sidebar_activity, add="+")
             widget.bind("<Button>", self._sidebar_activity, add="+")
             widget.bind("<Key>", self._sidebar_activity, add="+")
@@ -1235,7 +1247,7 @@ class ViewerWindow(tk.Toplevel):
     # ------------------------------------------------------------- layout
     def _apply_layout(self) -> None:
         """Show or hide the sidebar and details panel."""
-        if self.show_sidebar.get():
+        if self.show_sidebar.get() and not self._sidebar_auto_collapsed:
             self.sidebar.grid(row=0, column=0, sticky="nsew")
             self.sash.grid(row=0, column=1, sticky="ns")
             self.body.columnconfigure(0, weight=0, minsize=SIDEBAR_MIN)
@@ -1279,6 +1291,8 @@ class ViewerWindow(tk.Toplevel):
         self._sidebar_visibility_changed()
 
     def _sidebar_visibility_changed(self) -> None:
+        # A deliberate toggle always wins over the single-file collapse.
+        self._sidebar_auto_collapsed = False
         self._apply_layout()
         if self.show_sidebar.get():
             self.toast("File list shown" +
@@ -1406,6 +1420,7 @@ class ViewerWindow(tk.Toplevel):
         self._list_seq += 1
         self.explicit_paths = []
         self.folder_var.set("")
+        self._sync_path_controls()
         self.clear_folder_button.state(["disabled"])
         self._stop_video_session()
         self.current = None
@@ -1458,6 +1473,7 @@ class ViewerWindow(tk.Toplevel):
         self.explicit_paths = None
         self.folder_var.set(str(folder))
         self.clear_folder_button.state(["!disabled"])
+        self._sync_path_controls()
         self._update_window_title()
         self._stop_video_session()
         self.current = None
@@ -1672,6 +1688,55 @@ class ViewerWindow(tk.Toplevel):
             # is not the whole truth has to keep saying so.
             count += " ⚠"
         self.count_var.set(count)
+        self._auto_sidebar()
+        self._sync_path_controls()
+
+    def _auto_sidebar(self) -> None:
+        """Collapse the file list for a single explicitly opened file.
+
+        One row in a 300 px panel is not a list, it is wasted width beside
+        the document. The collapse is a layout override, never a change to
+        the user's Files preference: opening a folder or a second file lifts
+        it, and so does toggling Files by hand.
+        """
+        key = (self.explicit_paths is not None, len(self.filtered))
+        if key == self._auto_sidebar_key:
+            return
+        self._auto_sidebar_key = key
+        collapse = key[0] and key[1] <= 1
+        if collapse != self._sidebar_auto_collapsed:
+            self._sidebar_auto_collapsed = collapse
+            self._apply_layout()
+
+    def _sync_path_controls(self) -> None:
+        """Folder mode shows the editable path; explicit files show a chip."""
+        if getattr(self, "path_chip", None) is None:
+            return
+        try:
+            if self.explicit_paths is None:
+                self.path_chip.grid_remove()
+                self.folder_entry.grid()
+                self.clear_folder_button.grid()
+                self.clear_folder_button.state(["!disabled"])
+                return
+            self.folder_entry.grid_remove()
+            self.clear_folder_button.grid_remove()
+            parent = self.current.path.parent if self.current else None
+            if parent is None:
+                self.path_chip_var.set("Opened files")
+                self.path_chip_tip.text = "Files opened directly"
+            else:
+                self.path_chip_var.set(parent.name or str(parent))
+                self.path_chip_tip.text = f"{parent}\nClick to browse this folder"
+            self.path_chip.grid()
+        except tk.TclError:
+            pass
+
+    def _open_chip_folder(self) -> None:
+        if self.current is None:
+            self.choose_folder()
+            return
+        self.set_folder(self.current.path.parent, select=self.current.path)
 
     def _ensure_group(self, subfolder: str, groups: dict[str, str]) -> str:
         """Return the tree node for ``subfolder``, creating missing ancestors.
@@ -1825,6 +1890,7 @@ class ViewerWindow(tk.Toplevel):
         """Load a still document asynchronously or start a video stream."""
         self.current = entry
         self._update_window_title()
+        self._sync_path_controls()
         # Every navigation, including video, invalidates an older still load.
         token = time.perf_counter()
         self._load_token = token
@@ -2433,6 +2499,25 @@ class ViewerWindow(tk.Toplevel):
         vy1 = y0 + min(self.off_y + ch / self.scale, height) * sy
         canvas.create_rectangle(vx0, vy0, vx1, vy1, outline=p.accent, width=2, tags="mini")
         self._minimap_rect = (x0, y0, photo.width(), photo.height())
+        # The map answers "where am I?" right after the view moved; once the
+        # pointer has been idle it is just a sticker on the page, so it
+        # fades and comes back with the next pan, zoom or scroll.
+        if self._minimap_job:
+            try:
+                self.after_cancel(self._minimap_job)
+            except Exception:
+                pass
+        self._minimap_job = self.after(MINIMAP_FADE_MS, self._fade_minimap)
+
+    def _fade_minimap(self) -> None:
+        self._minimap_job = None
+        if self._destroyed:
+            return
+        try:
+            self.canvas.delete("mini")
+        except tk.TclError:
+            return
+        self._minimap_rect = None
 
     # ---------------------------------------------------------------- events
     def _on_canvas_configure(self, _event=None) -> None:
@@ -3404,27 +3489,27 @@ class ViewerWindow(tk.Toplevel):
             base_dpi = float(getattr(self.document, "base_dpi", self.pdf_dpi.get()))
             display_scale *= base_dpi / PDF_SCREEN_DPI
         self.zoom_var.set(f"{display_scale * 100:.0f}%")
-        if self.document is None:
+        # Pixel size and paper format live in the Details panel; the page
+        # bar already names the PDF page. Only multi-frame images, which
+        # have no page bar, announce their frame here.
+        if (self.document is None or self.document.page_count < 2
+                or self.pdf_controls.winfo_ismapped()):
             self.page_var.set("")
             return
-        width, height = self.document.page_size(self.page)
-        parts = [f"{width} x {height} px"]
-        if self._is_pdf() and hasattr(self.document, "page_format"):
-            try:
-                parts.append(self.document.page_format(self.page))
-            except Exception:
-                pass
-        if self.document.page_count > 1:
-            parts.insert(0, f"page {self.page + 1}/{self.document.page_count}")
-        self.page_var.set("   ".join(parts))
+        self.page_var.set(f"frame {self.page + 1} / {self.document.page_count}")
 
     def _update_status(self, note: str) -> None:
+        """Name and position in the list; everything else has its own home
+        (Details panel, page bar, zoom readout). Only notes that carry news
+        ("Edits discarded", a watcher reload) are shown, transient ones
+        such as "Loaded" or "Page" are not."""
         if not self.current:
             return
         index = self._index() + 1
-        self.status_var.set(
-            f"{note}  ·  {self.current.relname}  ·  {D.format_size(self.current.size)}"
-            f"  ·  {D.format_time(self.current.mtime)}  ·  {index}/{len(self.filtered)}")
+        text = f"{self.current.relname}  ·  {index} of {len(self.filtered)}"
+        if note and note not in ("Loaded", "Page", "Ready"):
+            text = f"{note}  ·  {text}"
+        self.status_var.set(text)
 
     def _update_info(self) -> None:
         """Refresh the details panel contents."""
@@ -3667,7 +3752,7 @@ class ViewerWindow(tk.Toplevel):
         """Cancel every window-owned Tk callback before its interpreter dies."""
         names = (
             "_watch_job", "_quality_job", "_toast_job", "_slideshow_job",
-            "_resize_job", "_video_job", "_sidebar_hide_job",
+            "_resize_job", "_video_job", "_sidebar_hide_job", "_minimap_job",
         )
         for name in names:
             job = getattr(self, name, None)

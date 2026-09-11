@@ -161,6 +161,15 @@ class IndexPanelLiveTests(unittest.TestCase):
                     application.root.update()
                     self.assertTrue(index.available)
                     self.assertTrue(window.index_panel.winfo_ismapped())
+
+                    # One explicitly opened file: the list collapses and the
+                    # path box gives way to a folder chip; the Files
+                    # preference itself is untouched.
+                    self.assertTrue(window.show_sidebar.get())
+                    self.assertFalse(window.sidebar.winfo_ismapped())
+                    self.assertTrue(window.path_chip.winfo_ismapped())
+                    self.assertFalse(window.folder_entry.winfo_ismapped())
+                    self.assertEqual(window.path_chip_var.get(), root.name)
                     self.assertEqual(len(index.tree.get_children("")), 3)
                     self.assertEqual(index.count_var.get(), "6")
 
@@ -207,6 +216,16 @@ class IndexPanelLiveTests(unittest.TestCase):
                     application.root.update()
                     self.assertFalse(index.available)
                     self.assertFalse(window.index_panel.winfo_ismapped())
+                    # A second file makes it a list again.
+                    self.assertEqual(len(window.filtered), 2)
+                    self.assertTrue(window.sidebar.winfo_ismapped())
+                    # Switching to folder mode restores the editable path.
+                    window.set_folder(root, select=plain)
+                    self._wait(application, lambda: window.explicit_paths is None
+                               and window.folder_entry.winfo_ismapped())
+                    application.root.update()
+                    self.assertTrue(window.folder_entry.winfo_ismapped())
+                    self.assertFalse(window.path_chip.winfo_ismapped())
                 finally:
                     application.quit_all()
 
