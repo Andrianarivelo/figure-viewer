@@ -535,6 +535,11 @@ class Document:
         """The document's bookmarks in reading order; empty when it has none."""
         return []
 
+    def links(self, page: int) -> list:
+        """The page's own link annotations as :class:`figureviewer.links.Link`
+        objects in source pixels; empty for formats without links."""
+        return []
+
     def close(self) -> None:
         """Release any native resources."""
 
@@ -847,6 +852,68 @@ class VectorDocument(Document):
         except Exception:
             return []
         return entries
+
+    def links(self, page: int) -> list:
+        """Link annotations in source pixels.
+
+        Unlike words, ``page.get_links()`` already reports ``from`` boxes in
+        the rendered (rotated) frame, so only the DPI factor applies. Jump
+        targets: a plain GoTo's ``to`` point is in the *target* page's
+        rendered frame (MuPDF resolves it); a named destination is
+        resolved through ``Document.resolve_link`` for the same frame.
+        External file and launch actions are kept as descriptions only.
+        """
+        from .links import KIND_OTHER, KIND_PAGE, KIND_URI, Link
+        factor = self.base_dpi / 72.0
+        out: list[Link] = []
+        try:
+            with self._lock:
+                proxy = self._page(page)
+                raw = proxy.get_links()
+                del proxy
+                for item in raw:
+                    rect = item.get("from")
+                    if rect is None:
+                        continue
+                    box = (min(rect.x0, rect.x1) * factor, min(rect.y0, rect.y1) * factor,
+                           max(rect.x0, rect.x1) * factor, max(rect.y0, rect.y1) * factor)
+                    kind = item.get("kind")
+                    if kind == fitz.LINK_URI:
+                        uri = str(item.get("uri") or "").strip()
+                        if uri:
+                            out.append(Link(box, KIND_URI, uri, text=uri))
+                    elif kind in (fitz.LINK_GOTO, fitz.LINK_NAMED):
+                        page_value = item.get("page")
+                        target = int(page_value) if page_value is not None else -1
+                        y_pts: Optional[float] = None
+                        name = item.get("nameddest") or item.get("name")
+                        if kind == fitz.LINK_NAMED and name:
+                            try:
+                                resolved = self._doc.resolve_link("#" + str(name))
+                            except Exception:
+                                resolved = None
+                            if resolved and resolved[0] >= 0:
+                                target = int(resolved[0])
+                                y_pts = float(resolved[2]) if resolved[2] > 0 else None
+                        else:
+                            to = item.get("to")
+                            if to is not None:
+                                try:
+                                    y = float(fitz.Point(to).y)
+                                except Exception:
+                                    y = 0.0
+                                y_pts = y if y > 0 else None
+                        if not (0 <= target < self.page_count):
+                            target = -1
+                            y_pts = None
+                        out.append(Link(box, KIND_PAGE, "", target, y_pts,
+                                        text=f"page {target + 1}" if target >= 0 else ""))
+                    else:
+                        target_file = str(item.get("file") or item.get("uri") or "").strip()
+                        out.append(Link(box, KIND_OTHER, target_file, text=target_file))
+        except Exception:
+            return []
+        return out
 
     def close(self) -> None:
         try:

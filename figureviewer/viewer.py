@@ -47,6 +47,7 @@ from . import winclip
 from .editui import EditController
 from .icons import IconFactory
 from .indexui import IndexController
+from .linkui import LinkController
 from .textui import TextController
 from .theme import (DOCK_DEFAULT, DOCK_MAX, DOCK_MIN, LIST_FLAT, LIST_TREE,
                     SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN, MenuBar, Palette,
@@ -350,6 +351,9 @@ class ViewerWindow(tk.Toplevel):
         # in every gesture, before panning. The toolbar's OCR button targets
         # it, so it exists before the UI is built (it needs no widgets).
         self.text = TextController(self)
+        # Clickable links (PDF link annotations, printed URLs, addresses in
+        # an OCR layer); consulted on hover and on a click without drag.
+        self.links = LinkController(self)
         # Document outline (bookmarks) docked on the right when available;
         # its panel is built inside _build_ui's right dock.
         self.index = IndexController(self)
@@ -1912,6 +1916,7 @@ class ViewerWindow(tk.Toplevel):
                 return
             self.document = document
             self.text.on_document_loaded()
+            self.links.on_document_loaded()
             if not keep_view:
                 self.page = 0
                 self.rotation = 0
@@ -2437,6 +2442,7 @@ class ViewerWindow(tk.Toplevel):
         self._draw_minimap()
         self.edit.draw_overlay()
         self.text.draw()
+        self.links.draw()
 
     def _draw_empty(self) -> None:
         if self.explicit_paths is None:
@@ -2606,6 +2612,9 @@ class ViewerWindow(tk.Toplevel):
             self._snip_start = (event.x, event.y)
             self._snip_rect = None
             return
+        # A link under the press is remembered (not consumed): only a
+        # release without drag on the same link opens it, in _on_release.
+        self.links.on_press(event)
         # A press on text starts a selection; on blank page it falls
         # through to panning, so the reading gesture is unchanged.
         if self.text.on_press(event):
@@ -2636,9 +2645,11 @@ class ViewerWindow(tk.Toplevel):
         if self._snip_start is not None:
             self._finish_snip(event.x, event.y)
             return
-        if self.text.on_release(event):
-            return
-        self._end_pan()
+        clicked = self.links.on_release(event)
+        if not self.text.on_release(event):
+            self._end_pan()
+        if clicked is not None:
+            self.links.open(clicked)
 
     def _end_pan(self) -> None:
         self._pan_anchor = None
@@ -2679,7 +2690,9 @@ class ViewerWindow(tk.Toplevel):
         self.text.select_line_at(event)
 
     def _on_motion(self, event) -> None:
-        self.text.on_motion(event)
+        # A link wins the cursor; otherwise the text layer decides.
+        if not self.links.on_motion(event):
+            self.text.on_motion(event)
         if self.document is None:
             self._set_probe("")
             return
@@ -3170,6 +3183,7 @@ class ViewerWindow(tk.Toplevel):
         """Apply one validated page index and refresh all page-specific UI."""
         self.edit.on_page_changed()
         self.text.on_page_changed()
+        self.links.on_page_changed()
         self.page = page
         self._minimap_key = None
         if self.fit_mode != FIT_FREE:
@@ -3534,6 +3548,9 @@ class ViewerWindow(tk.Toplevel):
                 ocr_words = self.text.ocr_word_count()
                 if ocr_words is not None:
                     rows.append(("OCR text", f"{ocr_words} words recognised"))
+                links = self.links.count()
+                if links:
+                    rows.append(("Links", f"{links} on this page  ·  click to open"))
             elif self._video_session is not None:
                 snapshot = self._video_session.snapshot()
                 rows += [
@@ -3597,6 +3614,7 @@ class ViewerWindow(tk.Toplevel):
         menu.add_separator()
         menu.add_command(label="Save Page As…", command=self.save_page_as)
         menu.add_command(label="Open in Default App", command=self.open_default_app)
+        self.links.context_items(menu, event)
         self.text.context_items(menu, event)
         if self.edit.available():
             menu.add_separator()
@@ -3669,6 +3687,7 @@ class ViewerWindow(tk.Toplevel):
             ("Esc", "Clear the selection"),
             ("Tools > Recognise Text", "OCR a scan or an image; images gain a text layer"),
             ("Ctrl+Shift+T", "OCR the image or scanned page and copy its text"),
+            ("Click a link", "Open a web address, e-mail or DOI in the browser; page links jump"),
             ("Ctrl+Shift+I", "Index panel: the PDF's bookmarks, click to jump"),
             ("", ""),
             ("Copy and snip", ""),

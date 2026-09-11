@@ -266,6 +266,19 @@ neutral rather than black, the status bar shows the file name and its
 position in the list (pixel size, paper and dates live in Details), and the
 file list opens at the normal density.
 
+**Clickable links.** Links open in the default browser with one click. A PDF's
+own link annotations are honoured (web addresses, jumps to another page or a
+named destination), and addresses that are merely printed in the text are
+detected as well: `https://...` and `www.` URLs, e-mail addresses (opened in
+the mail client) and DOIs (opened at doi.org), with sentence punctuation and
+brackets stripped. After OCR the same detection runs over an image, so the
+links in a screenshot become clickable. Hovering shows a hand cursor, a
+highlight and the destination in the status bar; a click without drag
+follows it, while dragging still selects text or pans. The context menu
+offers **Open Link** and **Copy Link Address**, and the Details panel counts
+the links on the page. Only `http`, `https`, `mailto` and `ftp` targets are
+ever handed to the system; file launch links are shown but never run.
+
 **Redaction burns content out.** Applying redactions removes the text, blanks
 the covered pixels of images (the rest of the picture survives) and drops
 vector art fully inside a mark, so nothing recoverable stays under the black
@@ -586,6 +599,7 @@ Press **F1** in the app for the full list. The essentials:
 | Drag / middle-drag | Pan |
 | Double click | Toggle fit page / 100 % |
 | `S` | Snip a region to the clipboard |
+| Click a link | Open a web address, e-mail or DOI in the default browser; page links jump |
 | `Ctrl+C` | Copy the whole page or current video frame |
 | `Ctrl+Shift+V` | Copy exactly what is on screen |
 | `Ctrl+B` | Show or hide the file list |
