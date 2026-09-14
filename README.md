@@ -37,6 +37,50 @@ These tools are included in the 1.1.0 Windows downloads and the source launcher.
 
 ---
 
+## Linux source installation
+
+The Linux launcher provides smooth Noto Sans interface fonts, native clipboard
+copying through X11/XWayland, mouse-wheel scrolling, desktop PDF registration,
+and an optional Nautilus folder context menu. Windows launchers are unchanged.
+
+Create an environment with the **Xft** Tk build, which enables antialiased fonts:
+
+```bash
+conda create -n figure-viewer -c conda-forge python=3.13 pip 'tk=*=xft_*' xclip
+conda activate figure-viewer
+python -m pip install pillow pymupdf opencv-python-headless pdf2docx python-docx openpyxl python-pptx pyhanko
+python install_linux.py --default-pdf --nautilus
+```
+
+Install Noto Sans and DejaVu fonts through your distribution if missing. The
+folder menu also requires the distribution's `nautilus-python` integration and
+Nautilus 4.0 or 4.1 introspection API. Restart Nautilus after installation, once
+any file transfers have finished. Omit `--default-pdf` to preserve the PDF default
+or `--nautilus` to omit the folder menu. The installer writes only per-user files
+and captures the active Python interpreter; desktop launches do not require
+manual environment activation. Re-run it after moving the checkout/environment.
+
+Run `python figview_linux.py /path/to/folder` directly, or choose **Ouvrir avec
+FigView** on a selected folder. **Ouvrir ce dossier avec FigView** opens the folder
+whose empty background was clicked. External folder requests show only direct
+contents, even when an existing window previously used recursive scanning.
+Subfolder scanning can still be enabled explicitly from the app's Tools menu.
+The Linux launcher stores settings under `$XDG_CONFIG_HOME/FigureViewerApp`
+(default `~/.config/FigureViewerApp`). Font family and size are configurable at
+the top of `figview_linux.py`. Clipboard support requires X11 or XWayland.
+
+Validate the installation using disposable fixtures (install `xvfb` if needed):
+
+```bash
+xvfb-run -a python figview_linux.py --self-test /tmp/figview-selftest.json
+xvfb-run -a -s '-screen 0 1280x850x24' python linux/check_linux.py /tmp/figview-linux-checks
+```
+
+The Linux check verifies resolved fonts, exact folder scope on startup and real
+second-process IPC, exclusion of child/sibling files, and produces a screenshot.
+
+---
+
 ## Windows executable release
 
 Download version 1.1.0 from the [GitHub release](https://github.com/Andrianarivelo/figure-viewer/releases/tag/v1.1.0):

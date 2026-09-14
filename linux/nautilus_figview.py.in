@@ -1,0 +1,62 @@
+"""Add a FigView action to Nautilus folder and folder-background menus."""
+
+from pathlib import Path
+import subprocess
+
+import gi
+
+try:
+    gi.require_version("Nautilus", "4.1")
+except ValueError:
+    gi.require_version("Nautilus", "4.0")
+from gi.repository import GObject, Nautilus
+
+# Use the installed Linux launcher so clipboard and scrolling remain supported.
+LAUNCHER = Path(__FIGVIEW_LAUNCHER__)
+MENU_LABEL = "Ouvrir avec FigView"
+
+
+class FigViewExtension(GObject.GObject, Nautilus.MenuProvider):
+    """Offer FigView for local directories without changing their default app."""
+
+    def get_file_items(self, files):
+        """Show one action when every selected item is a local directory."""
+        if not files or not LAUNCHER.is_file():
+            return []
+        paths = []
+        for file in files:
+            path = file.get_location().get_path()
+            if not file.is_directory() or path is None:
+                return []
+            paths.append(path)
+        return [self._make_item("selection", paths)]
+
+    def get_background_items(self, current_folder):
+        """Also offer the action when right-clicking inside a local folder."""
+        if current_folder is None or not LAUNCHER.is_file():
+            return []
+        path = current_folder.get_location().get_path()
+        if path is None or not current_folder.is_directory():
+            return []
+        return [self._make_item("background", [path])]
+
+    def _make_item(self, context, paths):
+        """Build a native Nautilus menu item and attach its folder arguments."""
+        item = Nautilus.MenuItem(
+            name=f"FigViewExtension::{context}",
+            label=MENU_LABEL if context == "selection" else "Ouvrir ce dossier avec FigView",
+            tip="Ouvrir uniquement : " + ", ".join(paths),
+            icon="folder-pictures-symbolic",
+        )
+        item.connect("activate", self._open_folders, paths)
+        return item
+
+    def _open_folders(self, item, paths):
+        """Launch without a shell so spaces and special characters stay literal."""
+        subprocess.Popen(
+            [str(LAUNCHER), *paths],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
