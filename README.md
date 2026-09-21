@@ -331,6 +331,26 @@ offers **Open Link** and **Copy Link Address**, and the Details panel counts
 the links on the page. Only `http`, `https`, `mailto` and `ftp` targets are
 ever handed to the system; file launch links are shown but never run.
 
+**Combine PDFs.** `File > Combine PDFs…` (`Ctrl+Shift+M`, also in the file
+list's context menu) opens a Combine window in the Adobe style: the files
+are listed top to bottom in the order they will be joined, and you change
+that order by dragging a row, with Move up / Move down (`Alt+Up` /
+`Alt+Down`) or with **A to Z**. Add files, remove them, pick the destination
+name, and press Combine; the result opens in the viewer. Files opened
+explicitly are offered automatically, in folder mode the current PDF is.
+Every page is copied as-is, the combined file gets one bookmark per source
+with the source's own bookmarks nested under it, and the write is atomic, so
+a source may even be chosen as the destination. Locked (password) files are
+flagged and must be unlocked first.
+
+From Explorer, select several PDFs, right-click, **Combine with FigView**:
+the files arrive in the same window already in Explorer's alphabetical order
+(`chapter2` before `chapter10`, like the folder listing), so one click
+combines them, and the order can still be changed first. The entry is
+registered by `register_file_types.ps1` on the PDF type itself, so it is
+there whatever app owns the double-click; `unregister_file_types.ps1`
+removes it.
+
 **Redaction burns content out.** Applying redactions removes the text, blanks
 the covered pixels of images (the rest of the picture survives) and drops
 vector art fully inside a mark, so nothing recoverable stays under the black
@@ -652,6 +672,7 @@ Press **F1** in the app for the full list. The essentials:
 | Double click | Toggle fit page / 100 % |
 | `S` | Snip a region to the clipboard |
 | Click a link | Open a web address, e-mail or DOI in the default browser; page links jump |
+| `Ctrl+Shift+M` | Combine PDFs into one file, in the order you choose |
 | `Ctrl+C` | Copy the whole page or current video frame |
 | `Ctrl+Shift+V` | Copy exactly what is on screen |
 | `Ctrl+B` | Show or hide the file list |

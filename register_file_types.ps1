@@ -107,6 +107,10 @@ $Launch = Resolve-ViewerLaunch -AppDir $AppDir -SourceScript "figure_viewer_app.
 $Python = $Launch.Python
 $Command = ('"{0}" {1} "%1"' -f $Launch.Target, $Launch.Arguments)
 if ($Launch.IsFrozen) { $Command = '"{0}" "%1"' -f $Launch.Target }
+# "Combine with FigView": the same launch with --combine. Explorer runs it once
+# per selected PDF; the running viewer gathers those launches into one dialog.
+$CombineCommand = ('"{0}" {1} --combine "%1"' -f $Launch.Target, $Launch.Arguments)
+if ($Launch.IsFrozen) { $CombineCommand = '"{0}" --combine "%1"' -f $Launch.Target }
 # A persistent content-addressed icon also survives one-file extraction cleanup.
 $PersistentIcon = Resolve-ViewerShellIcon -AppDir $AppDir
 if ($PersistentIcon) { $Icon = $PersistentIcon }
@@ -195,6 +199,21 @@ foreach ($ext in $Targets) {
     Set-RegValue -Path "HKCU:\$CapPath\FileAssociations" -Name $ext -Value $progId
 
     Write-Host ("  registered  {0,-6}  ->  {1}" -f $ext, $progId)
+}
+
+# 4. a "Combine with FigView" entry on every PDF's context menu, whatever app
+#    owns the .pdf default: SystemFileAssociations verbs show for the type
+#    itself. MultiSelectModel=Player suppresses the "open 15 items?" prompt on
+#    large selections; the per-file launches are merged by the viewer.
+if ($Targets -contains ".pdf") {
+    $combinePath = Join-Path $classes "SystemFileAssociations\.pdf\shell\FigView.Combine"
+    Set-RegValue -Path $combinePath -Name "(Default)"        -Value "Combine with FigView"
+    Set-RegValue -Path $combinePath -Name "MultiSelectModel" -Value "Player"
+    if (Test-Path $Icon) {
+        Set-RegValue -Path $combinePath -Name "Icon" -Value "$Icon,0"
+    }
+    Set-RegValue -Path (Join-Path $combinePath "command") -Name "(Default)" -Value $CombineCommand
+    Write-Host "  registered  .pdf    ->  context menu 'Combine with FigView'"
 }
 
 # Existing raster ProgIDs may remain outside `$Targets` during a PDF-only run.

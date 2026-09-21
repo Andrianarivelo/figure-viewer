@@ -39,16 +39,29 @@ def read_message(conn: socket.socket) -> dict:
     raise ValueError("Incomplete or oversized IPC message")
 
 
+#: Command-line flag of the Explorer "Combine with FigView" verb: the PDFs
+#: are collected by the running instance and offered for combining instead
+#: of being opened.
+COMBINE_FLAG = "--combine"
+
+
 def hand_over_to_running_instance(
     paths: Iterable[Path], *, instance_path: Path = INSTANCE_PATH,
+    combine: bool = False,
 ) -> bool:
-    """Send absolute paths and return true only after a positive acknowledgment."""
+    """Send absolute paths and return true only after a positive acknowledgment.
+
+    ``combine`` marks the paths as a combine request (see :data:`COMBINE_FLAG`).
+    """
     try:
         stored = json.loads(instance_path.read_text(encoding="utf-8"))
-        payload = json.dumps({
+        message = {
             "token": str(stored["token"]),
             "paths": [str(path.expanduser().absolute()) for path in paths],
-        }).encode("utf-8") + b"\n"
+        }
+        if combine:
+            message["combine"] = True
+        payload = json.dumps(message).encode("utf-8") + b"\n"
         if len(payload) > MAX_MESSAGE_BYTES:
             return False
         with socket.create_connection(("127.0.0.1", int(stored["port"])), timeout=1.5) as conn:
@@ -61,12 +74,14 @@ def hand_over_to_running_instance(
 
 def forward_arguments(arguments: Iterable[str]) -> bool:
     """Take the fast shell-open path only when saved single-instance mode allows it."""
+    arguments = list(arguments)
     paths = [Path(item) for item in arguments if item and not item.startswith("-")]
     if not paths or not INSTANCE_PATH.is_file():
         return False
     if not single_instance_enabled():
         return False
-    return hand_over_to_running_instance(paths, instance_path=INSTANCE_PATH)
+    return hand_over_to_running_instance(paths, instance_path=INSTANCE_PATH,
+                                         combine=COMBINE_FLAG in arguments)
 
 
 def single_instance_enabled() -> bool:

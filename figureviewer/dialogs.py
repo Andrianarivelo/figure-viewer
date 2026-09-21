@@ -14,6 +14,7 @@ rules of the house:
 """
 from __future__ import annotations
 
+import os
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, ttk
@@ -933,3 +934,321 @@ def page_ops_menu(parent, palette: Palette, controller, page: int) -> tk.Menu:
     menu.add_command(label="Delete page",
                      command=lambda: controller.delete_pages([page]))
     return menu
+
+
+# ---------------------------------------------------------------------------
+# Combine PDFs
+
+class CombineDialog(ThemedDialog):
+    """Choose and order the PDFs to combine, and where the result goes.
+
+    Files are listed top to bottom in the order they will be combined. The
+    order is changed by dragging a row, with the Move up / Move down
+    buttons (Alt+Up / Alt+Down), or with "A to Z", which applies Explorer's
+    natural alphabetical order. Locked or unreadable files are shown but
+    keep the Combine button disabled until they are removed.
+
+    The dialog never writes anything: :meth:`wait` returns a dict with
+    ``sources`` (ordered paths), ``target`` (Path), ``bookmarks`` and
+    ``open`` (bools), and the caller runs
+    :func:`figureviewer.combine.combine_pdfs`. Paths can still be added
+    while the dialog is open (:meth:`add_paths`), which is how Explorer
+    launches arriving late are folded in.
+    """
+
+    def __init__(self, parent, palette: Palette, paths: list[Path], *,
+                 alphabetical: bool = False,
+                 initial_dir: Optional[Path] = None) -> None:
+        from . import combine as C
+        super().__init__(parent, palette, "Combine PDFs")
+        self._combine = C
+        self.palette = palette
+        self._infos: dict[str, C.SourceInfo] = {}
+        self._order: list[Path] = []
+        self._drag_iid: Optional[str] = None
+        self._user_reordered = False
+        self._target_touched = False
+        self._target: Optional[Path] = None
+        self._initial_dir = initial_dir
+        body = self.body
+        body.columnconfigure(0, weight=1)
+
+        ttk.Label(body, text="Files are combined from top to bottom. Drag a row, "
+                  "use the arrows, or sort A to Z to change the order.",
+                  wraplength=560).grid(row=0, column=0, columnspan=2, sticky="w",
+                                       pady=(0, 10))
+
+        holder = ttk.Frame(body, style="Card.TFrame", padding=1)
+        holder.grid(row=1, column=0, sticky="nsew")
+        body.rowconfigure(1, weight=1)
+        self.tree = ttk.Treeview(holder, columns=("pages", "size", "folder"),
+                                 show="tree headings", selectmode="browse",
+                                 height=9, style="EditList.Treeview")
+        self.tree.heading("#0", text="File", anchor="w")
+        self.tree.heading("pages", text="Pages", anchor="e")
+        self.tree.heading("size", text="Size", anchor="e")
+        self.tree.heading("folder", text="Folder", anchor="w")
+        self.tree.column("#0", width=260, minwidth=160, stretch=True)
+        self.tree.column("pages", width=60, minwidth=50, anchor="e", stretch=False)
+        self.tree.column("size", width=76, minwidth=60, anchor="e", stretch=False)
+        self.tree.column("folder", width=200, minwidth=120, stretch=True)
+        self.tree.tag_configure("bad", foreground=palette.danger)
+        self.tree.pack(side="left", fill="both", expand=True)
+        scroll = ttk.Scrollbar(holder, orient="vertical", command=self.tree.yview)
+        scroll.pack(side="right", fill="y")
+        self.tree.configure(yscrollcommand=scroll.set)
+        self.tree.bind("<ButtonPress-1>", self._drag_start)
+        self.tree.bind("<B1-Motion>", self._drag_move)
+        self.tree.bind("<ButtonRelease-1>", self._drag_end)
+        self.tree.bind("<Alt-Up>", lambda _e: self.move(-1))
+        self.tree.bind("<Alt-Down>", lambda _e: self.move(1))
+        self.tree.bind("<Delete>", lambda _e: self.remove())
+        self.tree.bind("<<TreeviewSelect>>", lambda _e: self._sync_buttons())
+
+        side = ttk.Frame(body, style="TFrame")
+        side.grid(row=1, column=1, sticky="ns", padx=(10, 0))
+        self.buttons: dict[str, ttk.Button] = {}
+        for key, label, command, tip in (
+                ("add", "Add files…", self.add_files_dialog, "Choose more PDF files"),
+                ("remove", "Remove", self.remove, "Take the selected file out (Delete)"),
+                ("up", "Move up", lambda: self.move(-1), "Alt+Up"),
+                ("down", "Move down", lambda: self.move(1), "Alt+Down"),
+                ("sort", "A to Z", self.sort_alphabetical,
+                 "Explorer order: chapter2 before chapter10")):
+            button = ttk.Button(side, text=label, command=command, takefocus=False)
+            button.pack(fill="x", pady=(0, 6))
+            bind_tooltip(button, tip, palette)
+            self.buttons[key] = button
+
+        self.summary_var = tk.StringVar(value="")
+        ttk.Label(body, textvariable=self.summary_var, style="Muted.TLabel").grid(
+            row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
+
+        target_row = ttk.Frame(body, style="TFrame")
+        target_row.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        target_row.columnconfigure(1, weight=1)
+        ttk.Label(target_row, text="Save as", style="Muted.TLabel").grid(
+            row=0, column=0, sticky="w", padx=(0, 8))
+        self.target_var = tk.StringVar(value="")
+        entry = ttk.Entry(target_row, textvariable=self.target_var)
+        entry.grid(row=0, column=1, sticky="ew")
+        entry.bind("<KeyRelease>", lambda _e: self._target_edited())
+        ttk.Button(target_row, text="Browse…", command=self.browse_target,
+                   takefocus=False).grid(row=0, column=2, padx=(8, 0))
+
+        options = ttk.Frame(body, style="TFrame")
+        options.grid(row=4, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        self.bookmarks_var = tk.BooleanVar(value=True)
+        self.open_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(options, text="Add a bookmark for each file",
+                        variable=self.bookmarks_var, style="Toggle.TCheckbutton",
+                        takefocus=False).pack(side="left")
+        ttk.Checkbutton(options, text="Open the combined PDF",
+                        variable=self.open_var, style="Toggle.TCheckbutton",
+                        takefocus=False).pack(side="left", padx=(16, 0))
+
+        # The body is grid-managed, so the standard packed button row cannot
+        # be used; this is the same row laid out with grid.
+        row = ttk.Frame(body, style="TFrame")
+        row.grid(row=5, column=0, columnspan=2, sticky="e", pady=(14, 0))
+        self.ok_button = ttk.Button(row, text="Combine", style="Accent.TButton",
+                                    command=self.accept, takefocus=True)
+        self.ok_button.pack(side="right")
+        self.cancel_button = ttk.Button(row, text="Cancel", style="TButton",
+                                        command=self.cancel, takefocus=True)
+        self.cancel_button.pack(side="right", padx=(0, 8))
+        self.resizable(True, True)
+        self.minsize(640, 420)
+        self.add_paths(paths, alphabetical=alphabetical)
+        self.tree.focus_set()
+
+    # ----------------------------------------------------------- content
+    @property
+    def sources(self) -> list[Path]:
+        return list(self._order)
+
+    def add_paths(self, paths: list[Path], *, alphabetical: bool = False) -> None:
+        """Append PDFs (duplicates ignored). With ``alphabetical`` the whole
+        list is re-sorted unless the user already arranged it by hand."""
+        known = {self._identity(path) for path in self._order}
+        added = False
+        for raw in paths:
+            path = Path(raw)
+            identity = self._identity(path)
+            if identity in known:
+                continue
+            known.add(identity)
+            self._order.append(path)
+            self._infos[identity] = self._combine.inspect(path)
+            added = True
+        if alphabetical and not self._user_reordered:
+            self._order = self._combine.sort_alphabetical(self._order)
+        if added or not self.tree.get_children(""):
+            self._rebuild()
+            if not self._target_touched and self._order:
+                self.target_var.set(str(self._combine.default_target(self._order)))
+
+    @staticmethod
+    def _identity(path: Path) -> str:
+        return os.path.normcase(str(path))
+
+    def _rebuild(self, select: Optional[Path] = None) -> None:
+        tree = self.tree
+        tree.delete(*tree.get_children(""))
+        for index, path in enumerate(self._order):
+            info = self._infos[self._identity(path)]
+            if info.encrypted:
+                pages, tags = "locked", ("bad",)
+            elif info.error:
+                pages, tags = info.error, ("bad",)
+            else:
+                pages, tags = str(info.pages), ()
+            tree.insert("", "end", iid=f"s{index}", text=f"{index + 1}.  {path.name}",
+                        values=(pages, self._combine.format_size(info.size),
+                                str(path.parent)), tags=tags)
+        if self._order:
+            target = select if select in self._order else None
+            iid = f"s{self._order.index(target)}" if target else "s0"
+            tree.selection_set(iid)
+            tree.see(iid)
+        self._sync_buttons()
+
+    def _selected_index(self) -> Optional[int]:
+        selection = self.tree.selection()
+        if not selection:
+            return None
+        return int(selection[0][1:])
+
+    def _sync_buttons(self) -> None:
+        infos = [self._infos[self._identity(p)] for p in self._order]
+        total_pages = sum(info.pages for info in infos)
+        total_size = sum(info.size for info in infos)
+        bad = [info for info in infos if not info.ok]
+        count = len(self._order)
+        text = (f"{count} file{'s' if count != 1 else ''}  ·  {total_pages} pages"
+                f"  ·  {self._combine.format_size(total_size)}")
+        if bad:
+            text += (f"  ·  remove {len(bad)} locked or unreadable "
+                     f"file{'s' if len(bad) != 1 else ''}")
+        elif count < 2:
+            text += "  ·  add at least two files"
+        self.summary_var.set(text)
+        ready = count >= 2 and not bad
+        if self.ok_button is not None:
+            self.ok_button.state(["!disabled"] if ready else ["disabled"])
+        index = self._selected_index()
+        has = index is not None
+        self.buttons["remove"].state(["!disabled"] if has else ["disabled"])
+        self.buttons["up"].state(["!disabled"] if has and index > 0 else ["disabled"])
+        self.buttons["down"].state(
+            ["!disabled"] if has and index < count - 1 else ["disabled"])
+        self.buttons["sort"].state(["!disabled"] if count >= 2 else ["disabled"])
+
+    # ----------------------------------------------------------- actions
+    def add_files_dialog(self) -> None:
+        initial = self._initial_dir or (self._order[0].parent if self._order else None)
+        chosen = filedialog.askopenfilenames(
+            parent=self, title="Add PDF files", filetypes=[("PDF", "*.pdf")],
+            initialdir=str(initial) if initial else None)
+        if chosen:
+            self.add_paths([Path(item) for item in chosen])
+
+    def remove(self) -> None:
+        index = self._selected_index()
+        if index is None:
+            return
+        removed = self._order.pop(index)
+        self._infos.pop(self._identity(removed), None)
+        follow = self._order[min(index, len(self._order) - 1)] if self._order else None
+        self._rebuild(select=follow)
+
+    def move(self, delta: int) -> None:
+        index = self._selected_index()
+        if index is None:
+            return
+        new_index = index + delta
+        if not (0 <= new_index < len(self._order)):
+            return
+        item = self._order.pop(index)
+        self._order.insert(new_index, item)
+        self._user_reordered = True
+        self._rebuild(select=item)
+
+    def sort_alphabetical(self) -> None:
+        selected = self._selected_index()
+        keep = self._order[selected] if selected is not None else None
+        self._order = self._combine.sort_alphabetical(self._order)
+        self._user_reordered = False
+        self._rebuild(select=keep)
+
+    def browse_target(self) -> None:
+        current = Path(self.target_var.get()) if self.target_var.get() else None
+        chosen = filedialog.asksaveasfilename(
+            parent=self, title="Save the combined PDF as", defaultextension=".pdf",
+            initialfile=current.name if current else "Combined.pdf",
+            initialdir=str(current.parent) if current else None,
+            filetypes=[("PDF document", "*.pdf")])
+        if chosen:
+            self.target_var.set(chosen)
+            self._target_touched = True
+
+    def _target_edited(self) -> None:
+        self._target_touched = True
+
+    # --------------------------------------------------------- dragging
+    def _drag_start(self, event) -> None:
+        iid = self.tree.identify_row(event.y)
+        self._drag_iid = iid if iid else None
+
+    def _drag_move(self, event) -> None:
+        source = self._drag_iid
+        if not source:
+            return
+        over = self.tree.identify_row(event.y)
+        if not over or over == source:
+            return
+        from_index, to_index = int(source[1:]), int(over[1:])
+        item = self._order.pop(from_index)
+        self._order.insert(to_index, item)
+        self._user_reordered = True
+        self._rebuild(select=item)
+        # Row ids are positional: the dragged row now carries its new index.
+        self._drag_iid = f"s{to_index}"
+
+    def _drag_end(self, _event) -> None:
+        self._drag_iid = None
+
+    # ---------------------------------------------------------- result
+    def validate(self) -> bool:
+        from tkinter import messagebox
+        if len(self._order) < 2:
+            messagebox.showinfo("Combine PDFs", "Choose at least two PDF files.",
+                                parent=self)
+            return False
+        bad = [p.name for p in self._order if not self._infos[self._identity(p)].ok]
+        if bad:
+            messagebox.showwarning(
+                "Combine PDFs", "Remove these files first, they are locked or "
+                "unreadable:\n\n" + "\n".join(bad), parent=self)
+            return False
+        raw = self.target_var.get().strip().strip('"')
+        if not raw:
+            messagebox.showinfo("Combine PDFs", "Choose a name for the combined "
+                                "PDF.", parent=self)
+            return False
+        target = Path(raw).expanduser()
+        if target.suffix.lower() != ".pdf":
+            target = target.with_suffix(".pdf")
+        if not target.is_absolute():
+            target = self._order[0].parent / target
+        if target.exists() and not messagebox.askyesno(
+                "Combine PDFs", f"{target.name} already exists. Replace it?",
+                parent=self):
+            return False
+        self._target = target
+        return True
+
+    def apply(self) -> dict:
+        return {"sources": list(self._order), "target": self._target,
+                "bookmarks": bool(self.bookmarks_var.get()),
+                "open": bool(self.open_var.get())}

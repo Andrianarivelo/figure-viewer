@@ -294,7 +294,8 @@ class InstanceServer:
                     paths = [Path(item) for item in items
                              if isinstance(item, str)]
                     if paths:
-                        self._pending.put(paths)
+                        kind = "combine" if message.get("combine") is True else "open"
+                        self._pending.put((kind, paths))
                     conn.sendall(b'{"ok": true}\n')
                 except Exception:
                     continue
@@ -303,14 +304,18 @@ class InstanceServer:
         if self._closed:
             return
         paths: list[Path] = []
+        combine: list[Path] = []
         try:
             for _ in range(HANDOFF_BATCH_LIMIT):
                 try:
-                    paths.extend(self._pending.get_nowait())
+                    kind, items = self._pending.get_nowait()
                 except queue.Empty:
                     break
+                (combine if kind == "combine" else paths).extend(items)
             if paths:
                 self.app.open_paths(paths)
+            if combine:
+                self.app.combine_request(combine)
         finally:
             if not self._closed:
                 self._poll_job = self.app.root.after(HANDOFF_POLL_MS, self._drain)
@@ -334,13 +339,14 @@ class InstanceServer:
             pass
 
 
-def hand_over_to_running_instance(paths: list[Path]) -> bool:
+def hand_over_to_running_instance(paths: list[Path], *, combine: bool = False) -> bool:
     """Give ``paths`` to an already-running viewer. True if it accepted them.
 
     A stale instance file - left behind by a crash - simply fails to connect,
     and the caller starts a normal instance which overwrites it.
     """
-    return ipc.hand_over_to_running_instance(paths, instance_path=INSTANCE_PATH)
+    return ipc.hand_over_to_running_instance(paths, instance_path=INSTANCE_PATH,
+                                             combine=combine)
 
 
 class App:
@@ -373,6 +379,11 @@ class App:
         # two windows can never hold divergent unsaved edits of one document.
         self.edit_sessions: dict[str, object] = {}
         self._session_owners: dict[str, object] = {}
+        # Explorer's "Combine with FigView" starts one process per selected
+        # PDF; their paths gather here until the launches stop arriving.
+        self._combine_pending: list[Path] = []
+        self._combine_job: Optional[str] = None
+        self.combine_dialog = None
 
         # A remembered directory is only a dialog starting point. It must not
         # silently become an active folder listing: folders open only after an
@@ -477,6 +488,40 @@ class App:
         flush_files()
         if window is not None:
             self.focus_window(window)
+
+    # ------------------------------------------------------------- combine
+    def combine_request(self, paths: list[Path]) -> None:
+        """Collect PDFs from ``--combine`` launches; the dialog opens once
+        no new launch has arrived for :data:`combine.SHELL_SETTLE_MS`."""
+        from . import combine as C
+        fresh = [path for path in paths if C.is_pdf(path) and path.is_file()]
+        self._combine_pending.extend(fresh)
+        if self._combine_job is not None:
+            try:
+                self.root.after_cancel(self._combine_job)
+            except Exception:
+                pass
+        self._combine_job = self.root.after(C.SHELL_SETTLE_MS, self._flush_combine)
+
+    def _flush_combine(self) -> None:
+        self._combine_job = None
+        paths = list(self._combine_pending)
+        self._combine_pending.clear()
+        if not paths:
+            return
+        dialog = self.combine_dialog
+        if dialog is not None and dialog.winfo_exists():
+            # Late arrivals join the open dialog, still in Explorer order.
+            dialog.add_paths(paths, alphabetical=True)
+            try:
+                dialog.lift()
+                dialog.focus_force()
+            except Exception:
+                pass
+            return
+        window = self.windows[-1] if self.windows else self.new_window()
+        self.focus_window(window)
+        window.combine_pdfs(paths, alphabetical=True)
 
     def focus_window(self, window) -> None:
         """Bring a window to the front, the way a shell-opened file should.
@@ -730,15 +775,18 @@ def main(argv: Optional[list[str]] = None) -> int:
     """
     argv = list(sys.argv[1:] if argv is None else argv)
     targets = [Path(item).expanduser() for item in argv if item and not item.startswith("-")]
+    combine = ipc.COMBINE_FLAG in argv
 
     if targets and load_settings().get("single_instance", True):
-        if hand_over_to_running_instance(targets):
+        if hand_over_to_running_instance(targets, combine=combine):
             return 0
 
     # Construct the shell once, then process the entire batch together as soon
     # as Tk can paint it. No arbitrary startup delay or per-file rescanning.
     app = App()
-    if targets:
+    if targets and combine:
+        app.root.after_idle(lambda: app.combine_request(targets))
+    elif targets:
         app.root.after_idle(lambda: app.open_paths(targets))
     app.run()
     return 0

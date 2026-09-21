@@ -41,6 +41,7 @@ from typing import Optional
 from PIL import Image, ImageOps, ImageTk
 
 from . import APP_NAME, APP_VERSION
+from . import dialogs as DLG
 from . import docs as D
 from . import video as V
 from . import winclip
@@ -904,6 +905,8 @@ class ViewerWindow(tk.Toplevel):
                               command=self.edit.sign_with_certificate)
         file_menu.add_command(label="Merge PDFs at End…",
                               command=self.edit.merge_append_files)
+        file_menu.add_command(label="Combine PDFs…", accelerator="Ctrl+Shift+M",
+                              command=self.combine_pdfs_menu)
         file_menu.add_separator()
         file_menu.add_command(label="Save Page / Frame As…",
                               command=self.save_page_as)
@@ -1153,6 +1156,7 @@ class ViewerWindow(tk.Toplevel):
         bind("<Control-t>", lambda e: self.app.toggle_theme())
         bind("<Control-c>", self._copy_shortcut)
         bind("<Control-a>", guard(self.text.select_all))
+        bind("<Control-M>", guard(self.combine_pdfs_menu))
         bind("<Control-T>", guard(self.text.ocr_and_copy))
         bind("<Control-I>", guard(self.index.toggle))
         bind("<Control-Alt-h>", guard(self.edit.review.action))
@@ -1371,6 +1375,63 @@ class ViewerWindow(tk.Toplevel):
             self.add_file(path)
         else:
             self.set_folder(path)
+
+    # -------------------------------------------------------------- combine
+    def combine_pdfs_menu(self) -> None:
+        """File > Combine PDFs: start from the PDFs this window holds.
+
+        Explicitly opened files are a deliberate selection, so all of them
+        are offered in their list order; in folder mode only the current
+        PDF is, and the user adds the rest.
+        """
+        from . import combine as C
+        paths: list[Path] = []
+        if self.explicit_paths:
+            paths = [path for path in self.explicit_paths if C.is_pdf(path)]
+        elif self.current is not None and C.is_pdf(self.current.path):
+            paths = [self.current.path]
+        self.combine_pdfs(paths)
+
+    def combine_pdfs(self, paths: list[Path], *, alphabetical: bool = False) -> None:
+        """Show the Combine dialog, then write and (optionally) open the result."""
+        from . import combine as C
+        if not D.HAVE_FITZ:
+            messagebox.showinfo("Combine PDFs", "PyMuPDF is required to combine "
+                                "PDFs:\n\n    pip install pymupdf", parent=self)
+            return
+        initial = (self.current.path.parent if self.current is not None
+                   else (self.folder if self.explicit_paths is None else None))
+        dialog = DLG.CombineDialog(self, self.palette, paths,
+                                   alphabetical=alphabetical, initial_dir=initial)
+        self.app.combine_dialog = dialog
+        try:
+            config = dialog.wait()
+        finally:
+            if self.app.combine_dialog is dialog:
+                self.app.combine_dialog = None
+        if not config:
+            return
+        sources: list[Path] = config["sources"]
+        target: Path = config["target"]
+
+        def job(progress, cancel):
+            return C.combine_pdfs(sources, target, bookmarks=config["bookmarks"],
+                                  progress=progress, cancel=cancel)
+
+        def done(pages: int):
+            self.toast(f"Combined {len(sources)} PDFs into {target.name} "
+                       f"({pages} pages)")
+            if self.explicit_paths is None and target.parent == self.folder:
+                self.pending_select = target if config["open"] else None
+                self.rescan(keep_selection=not config["open"])
+            elif config["open"]:
+                self.add_files([target])
+
+        def failed(exc):
+            messagebox.showerror("Combine PDFs", str(exc), parent=self)
+
+        DLG.run_with_progress(self, self.palette, "Combining PDFs", job, done,
+                              failed=failed)
 
     def duplicate_window(self) -> None:
         """Clone this window without changing folder-versus-document mode."""
@@ -3643,6 +3704,8 @@ class ViewerWindow(tk.Toplevel):
                              explicit_paths=[self.current.path] if self.current else []))
         menu.add_command(label="Reveal in Explorer", command=self.reveal_in_explorer)
         menu.add_separator()
+        menu.add_command(label="Combine PDFs…", command=self.combine_pdfs_menu)
+        menu.add_separator()
         menu.add_command(label="Copy Image / Video Frame", command=self.copy_image)
         menu.add_command(label="Copy Path", command=self.copy_path)
         menu.add_command(label="Copy File", command=self.copy_file_object)
@@ -3688,6 +3751,7 @@ class ViewerWindow(tk.Toplevel):
             ("Tools > Recognise Text", "OCR a scan or an image; images gain a text layer"),
             ("Ctrl+Shift+T", "OCR the image or scanned page and copy its text"),
             ("Click a link", "Open a web address, e-mail or DOI in the browser; page links jump"),
+            ("Ctrl+Shift+M", "Combine PDFs into one file, in the order you choose"),
             ("Ctrl+Shift+I", "Index panel: the PDF's bookmarks, click to jump"),
             ("", ""),
             ("Copy and snip", ""),

@@ -77,6 +77,13 @@ Get-ChildItem -Path $classes -ErrorAction SilentlyContinue |
         }
     }
 
+# --- the "Combine with FigView" verb on PDFs
+$combineVerb = Join-Path $classes "SystemFileAssociations\.pdf\shell\FigView.Combine"
+if (Test-Path $combineVerb) {
+    Remove-Thing -What "verb SystemFileAssociations\.pdf\shell\FigView.Combine" `
+                 -Action { Remove-Item -Path $combineVerb -Recurse -Force }
+}
+
 # --- the capability block and the app registration
 if (Test-Path "HKCU:\Software\FigureViewer") {
     Remove-Thing -What "capabilities HKCU\Software\FigureViewer" `
