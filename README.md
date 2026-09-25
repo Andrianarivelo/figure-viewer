@@ -172,6 +172,18 @@ other supported raster image and video types when explicitly requested. Add
 under `HKEY_CURRENT_USER`, so no administrator rights are needed, and
 `unregister_file_types.ps1` removes all of it.
 
+### Open a folder from Explorer
+
+```powershell
+powershell -ExecutionPolicy Bypass -File D:\Apps\figure-viewer\register_folder_context.ps1
+```
+
+Adds **Open with FigView** to a folder's right-click menu, and to the
+right-click menu on empty space inside a folder (opens the folder you are
+in). Neither changes what double-clicking a folder does. Everything it
+writes lives under `HKEY_CURRENT_USER`, so no administrator rights are
+needed, and `unregister_folder_context.ps1` removes both entries.
+
 **One click is left over, and that is Windows' doing, not an oversight.** Since
 Windows 8 the actual default for a file type is stored in a `UserChoice` key
 protected by a per-user hash that only Explorer and the Settings app can
@@ -695,6 +707,8 @@ launch_figure_viewer.py    logging launcher used by the .bat and shortcuts
 install_shortcuts.ps1      Desktop / Start Menu shortcuts
 register_file_types.ps1    register with Windows as a media and PDF viewer
 unregister_file_types.ps1  undo the above
+register_folder_context.ps1    "Open with FigView" on the folder right-click menu
+unregister_folder_context.ps1  undo the above
 viewer_python.ps1          shared "which Python has Pillow?" probe
 figureviewer/
     theme.py               palettes, ttk styling, themed menu bar, tooltips
