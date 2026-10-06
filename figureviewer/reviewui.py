@@ -21,6 +21,7 @@ COLORS = (("Yellow", "#ffd54a"), ("Green", "#8bd450"),
           ("Blue", "#5aa7f0"), ("Pink", "#f28cba"),
           ("Purple", "#b06ad4"))
 DEFAULT_OPACITY = 0.35
+PREVIEW_HEIGHT = 5
 
 
 class ReviewController:
@@ -40,6 +41,56 @@ class ReviewController:
         self._generation = 0
         self._buttons = []
         self._restore_key = None
+        self._press = None
+
+    def on_press(self, event):
+        """Remember a reading click, without taking ownership of text selection."""
+        self._press = None
+        if (self.edit.available() and not self.edit.active
+                and not self.window.snip_mode.get() and not self.mode.get()
+                and not event.state & 0x0005):
+            self._press = (self.window.document, self.window.page, event.x, event.y)
+
+    def cancel_click(self):
+        """Any drag belongs to text selection or pan, even if it returns to its start."""
+        self._press = None
+
+    def on_release(self, event):
+        """Read an existing PDF comment only after an ordinary stationary click."""
+        press, self._press = self._press, None
+        if press is None:
+            return
+        document, page_index, x, y = press
+        if (document is not self.window.document or page_index != self.window.page
+                or abs(event.x - x) > 4 or abs(event.y - y) > 4):
+            return
+        point = D.fitz.Point(*self.edit.canvas_to_points(event.x, event.y))
+        uid = None
+        # Inspect the current PDF before acquiring a private edit session. A
+        # click on ordinary text must not copy the PDF or create edit history.
+        with document._lock:
+            page = document._doc[page_index]
+            for annot in page.annots() or ():
+                if not (annot.info or {}).get("content", "").strip():
+                    continue
+                if point not in annot.rect:
+                    continue
+                # Multiline markup rectangles include blank space between
+                # lines. Test each text quad so that space remains pannable.
+                if annot.type[0] in (D.fitz.PDF_ANNOT_HIGHLIGHT,
+                                     D.fitz.PDF_ANNOT_UNDERLINE,
+                                     D.fitz.PDF_ANNOT_STRIKE_OUT,
+                                     D.fitz.PDF_ANNOT_SQUIGGLY):
+                    vertices = annot.vertices or []
+                    if not any(point in D.fitz.Quad(vertices[i:i + 4])
+                               for i in range(0, len(vertices), 4)):
+                        continue
+                uid = (annot.info or {}).get("id") or f"xref:{annot.xref}"
+        if uid is not None:
+            self.query.set("")
+            self.kind.set("All")
+            self.open_panel()
+            self._restore_key = f"{page_index}:{uid}"
 
     def build_toolbar(self, parent):
         """Keep the three common review actions beside the existing Edit button."""
@@ -165,6 +216,7 @@ class ReviewController:
     def close_panel(self):
         """Cancel indexing when hidden or while changing documents."""
         self._cancel_index()
+        self.cancel_click()
         if self.panel is not None:
             self.panel.grid_remove()
         self.rows = []
@@ -185,12 +237,13 @@ class ReviewController:
         panel.grid_propagate(False)
         panel.columnconfigure(0, weight=1)
         panel.rowconfigure(5, weight=1)
+        panel.rowconfigure(7, weight=1)
         self.panel = panel
         panel.bind("<Destroy>", lambda event: self._cancel_index()
                    if event.widget is panel else None, add="+")
         header = ttk.Frame(panel)
         header.grid(row=0, column=0, sticky="ew")
-        ttk.Label(header, text="Text review", font="FVtitle").pack(side="left")
+        ttk.Label(header, text="Comments & review", font="FVtitle").pack(side="left")
         ttk.Button(header, text="Close", command=self.close_panel).pack(side="right")
         ttk.Label(panel, text="Select text, then Highlight or Comment.",
                   wraplength=REVIEW_WIDTH - 30).grid(row=1, column=0, sticky="w", pady=6)
@@ -226,7 +279,7 @@ class ReviewController:
         listing.columnconfigure(0, weight=1)
         listing.rowconfigure(0, weight=1)
         self.tree = ttk.Treeview(listing, columns=("page", "text"), show="headings",
-                                 selectmode="browse", height=7)
+                                 selectmode="browse", height=3)
         self.tree.heading("page", text="Page")
         self.tree.heading("text", text="Quote / comment")
         self.tree.column("page", width=52, stretch=False)
@@ -239,10 +292,18 @@ class ReviewController:
         self.tree.bind("<Double-1>", lambda _e: self.edit_comment())
         self.count = ttk.Label(panel, text="")
         self.count.grid(row=6, column=0, sticky="w", pady=6)
-        self.preview = tk.Text(panel, height=5, wrap="word", background=p.panel_alt,
-                               foreground=p.text, relief="flat", padx=8, pady=8,
+        preview_frame = ttk.Frame(panel)
+        preview_frame.grid(row=7, column=0, sticky="nsew")
+        preview_frame.columnconfigure(0, weight=1)
+        preview_frame.rowconfigure(0, weight=1)
+        self.preview = tk.Text(preview_frame, height=PREVIEW_HEIGHT, width=1,
+                               wrap="word", background=p.panel_alt,
+                               foreground=p.text, font="FVui", relief="flat", padx=8, pady=8,
                                state="disabled")
-        self.preview.grid(row=7, column=0, sticky="ew")
+        self.preview.grid(row=0, column=0, sticky="nsew")
+        preview_scroll = ttk.Scrollbar(preview_frame, command=self.preview.yview)
+        preview_scroll.grid(row=0, column=1, sticky="ns")
+        self.preview.configure(yscrollcommand=preview_scroll.set)
         actions = ttk.Frame(panel)
         actions.grid(row=8, column=0, sticky="ew", pady=8)
         for label, command in (("Edit comment", self.edit_comment),
@@ -303,7 +364,7 @@ class ReviewController:
                 continue
             if self.kind.get() == "Highlights" and info.kind != "highlight":
                 continue
-            if query not in f"{info.page + 1} {info.kind} {info.subject} {info.contents}".casefold():
+            if query not in f"{info.page + 1} {info.kind} {info.author} {info.subject} {info.contents}".casefold():
                 continue
             key = f"{info.page}:{info.uid}"
             self._items[key] = info
@@ -312,6 +373,7 @@ class ReviewController:
             if ((previous and previous.page == info.page and previous.uid == info.uid)
                     or key == self._restore_key):
                 self.tree.selection_set(key)
+                self.tree.see(key)
         self.count.configure(text=f"{len(self._items)} / {len(self.rows)} annotations")
         if self.rows:
             self._restore_key = None
@@ -328,13 +390,15 @@ class ReviewController:
         """Show complete text; users may select and copy even in read-only mode."""
         text = "Select an annotation to read or edit its comment."
         if info:
-            text = f"Page {info.page + 1} | {info.kind}\n"
+            text = f"By {info.author}\n" if info.author else ""
+            text += info.contents or "No comment yet."
+            text += f"\n\nPage {info.page + 1} | {info.kind}"
             if info.subject:
-                text += "\n" + info.subject + "\n"
-            text += "\n" + (info.contents or "No comment yet.")
+                text += "\n\nQuoted text:\n" + info.subject
         self.preview.configure(state="normal")
         self.preview.delete("1.0", "end")
         self.preview.insert("1.0", text)
+        self.preview.yview_moveto(0)
         self.preview.configure(state="disabled")
 
     def _selected(self, _event=None):

@@ -96,6 +96,7 @@ class AnnotInfo:
     rect: tuple[float, float, float, float]   # PDF points, top-left origin
     contents: str
     subject: str = ""
+    author: str = ""
 
 
 class EditableVectorDocument(D.VectorDocument):
@@ -661,6 +662,7 @@ class EditSession:
             rect=(rect.x0, rect.y0, rect.x1, rect.y1),
             contents=metadata.get("content", ""),
             subject=metadata.get("subject", ""),
+            author=metadata.get("title", ""),
         )
 
     def annots_on(self, page: int) -> list[AnnotInfo]:

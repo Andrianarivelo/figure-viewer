@@ -26,6 +26,11 @@ full quote, edit its comment, change its color/opacity, or delete it. Five color
 presets and opacity settings also apply to subsequent highlights. Export the
 filtered list as a UTF-8 CSV for a review report.
 
+Click a commented highlight or sticky note on the PDF to open its comment
+directly in the Review pane. Imported PDF comments are supported, including
+the author's name when present. The full comment preview scrolls and supports
+selecting and copying text. Dragging across commented text still selects text.
+
 Shortcuts: **Ctrl+Alt+H** highlights, **Ctrl+Alt+M** comments, and
 **Ctrl+Alt+R** toggles the review pane. The selection context menu offers the
 same actions. **Ctrl+Z / Ctrl+Y** undo and redo, including the entire creation of

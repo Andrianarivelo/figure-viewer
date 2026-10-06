@@ -22,12 +22,21 @@ class ReviewUITests(unittest.TestCase):
     _event = helpers.EditModeTests._event
 
     @contextmanager
-    def viewer(self, *, native_rotation=0):
+    def viewer(self, *, native_rotation=0, comment=None, sticky_note=False):
         """Ensure each real application closes before its temporary files vanish."""
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
             root = Path(directory)
             path = root / "review.pdf"
             helpers._make_pdf(path)
+            if comment is not None:
+                # Model a PDF received from another reviewer, before opening it.
+                with D.fitz.open(path) as fixture:
+                    page = fixture[0]
+                    annotation = (page.add_text_annot((250, 150), comment) if sticky_note
+                                  else page.add_highlight_annot(page.search_for("FigView")))
+                    annotation.set_info(content=comment, title="External reviewer")
+                    annotation.update()
+                    fixture.saveIncr()
             if native_rotation:
                 # Only mutate our generated fixture before the viewer opens it.
                 with D.fitz.open(path) as fixture:
@@ -53,6 +62,72 @@ class ReviewUITests(unittest.TestCase):
                       for rect in layer.rects_for(window.text.selected)]
         self.assertEqual(len(rectangles), 2)
         return window.text.selected_text(), rectangles
+
+    def test_click_foreign_comment_displays_author_and_complete_scrollable_text(self):
+        """Existing comments open in reading mode and never change source bytes."""
+        comment = "Révision α 中文\n" + "Detailed reviewer feedback.\n" * 40
+        for rotation in (0, 90):
+            with self.subTest(rotation=rotation), self.viewer(
+                    native_rotation=rotation, comment=comment) as (application, window, path):
+                original = path.read_bytes()
+                # Place the target in the canvas center, away from the minimap.
+                window.fit_page()
+                application.root.update()
+                with D.fitz.open(path) as fixture:
+                    page = fixture[0]
+                    annotation = next(page.annots())
+                    rect = tuple(annotation.rect)
+                box = window.edit.points_rect_to_canvas(rect)
+                event = self._event(window, (box[0] + box[2]) / 2, (box[1] + box[3]) / 2)
+                window._on_press(event)
+                window._on_release(event)
+                review = window.edit.review
+                self.indexed(application, review, 1)
+                self.assertTrue(review.panel.winfo_manager())
+                self.assertFalse(window.edit.active)
+                self.assertEqual(review.selected_info().contents, comment)
+                preview = review.preview.get("1.0", "end-1c")
+                self.assertIn("By External reviewer", preview)
+                self.assertIn(comment, preview)
+                application.root.update()
+                review.preview.yview_moveto(1)
+                self.assertGreater(review.preview.yview()[0], 0)
+                review.query.set("external reviewer")
+                self.assertEqual(len(review.tree.get_children()), 1)
+                self.assertFalse(window.edit.session.dirty)
+                self.assertEqual(path.read_bytes(), original)
+
+    def test_drag_over_foreign_comment_does_not_open_review_or_create_session(self):
+        """Dragging over annotated text retains the text selection interaction."""
+        with self.viewer(comment="Existing comment") as (_application, window, path):
+            with D.fitz.open(path) as fixture:
+                page = fixture[0]
+                annotation = next(page.annots())
+                box = window.edit.points_rect_to_canvas(tuple(annotation.rect))
+            event = self._event(window, (box[0] + box[2]) / 2, (box[1] + box[3]) / 2)
+            window._on_press(event)
+            window._on_drag(event)
+            window._on_release(event)
+            self.assertIsNone(window.edit.review.panel)
+            self.assertIsNone(window.edit.session)
+
+    def test_click_imported_sticky_note_clears_filters_and_selects_comment(self):
+        """A clicked note remains visible even after an unrelated review search."""
+        with self.viewer(comment="Reviewer note", sticky_note=True) as (application, window, _path):
+            review = window.edit.review
+            review.open_panel()
+            self.indexed(application, review, 1)
+            review.query.set("unrelated search")
+            review.kind.set("Highlights")
+            info = review.rows[0]
+            box = window.edit.points_rect_to_canvas(info.rect)
+            event = self._event(window, (box[0] + box[2]) / 2, (box[1] + box[3]) / 2)
+            window._on_press(event)
+            window._on_release(event)
+            self.indexed(application, review, 1)
+            self.assertEqual(review.selected_info().contents, "Reviewer note")
+            self.assertEqual(review.query.get(), "")
+            self.assertEqual(review.kind.get(), "All")
 
     def indexed(self, application, review, count):
         """Wait until the asynchronous annotation index has finished refreshing."""

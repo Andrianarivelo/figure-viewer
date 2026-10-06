@@ -104,7 +104,9 @@ def main():
     print(report)
 
 
-def render_timings(rows):
+def render_timings(rows, *, title="Default PDF markup: paired timings",
+                   subtitle="Milliseconds per addition; synthetic PDF; lower is faster",
+                   current_label="Review version", workload="additions"):
     """Export a compact paired-time figure in SVG, PDF and PNG using MuPDF."""
     maximum = max(row[f"{name}_ms"] for row in rows
                   for name in ("baseline", "current")) * 1.08
@@ -112,8 +114,8 @@ def render_timings(rows):
              f'height="{FIGURE_HEIGHT}" viewBox="0 0 {FIGURE_WIDTH} {FIGURE_HEIGHT}">',
              '<rect width="100%" height="100%" fill="white"/>',
              '<g font-family="sans-serif" fill="#25334a">',
-             '<text x="48" y="28" font-size="17">Default PDF markup: paired timings</text>',
-             '<text x="48" y="48" font-size="11">Milliseconds per addition; synthetic PDF; lower is faster</text>']
+             f'<text x="48" y="28" font-size="17">{title}</text>',
+             f'<text x="48" y="48" font-size="11">{subtitle}</text>']
     for tick in range(5):
         value = maximum * tick / 4
         y = 266 - value / maximum * 190
@@ -129,8 +131,8 @@ def render_timings(rows):
             f'<circle cx="440" cy="{right}" r="3" fill="{CURRENT_COLOR}"/>'])
     parts.extend([
         '<text x="220" y="287" text-anchor="middle" font-size="12">Previous version</text>',
-        '<text x="440" y="287" text-anchor="middle" font-size="12">Review version</text>',
-        f'<text x="48" y="319" font-size="11">{PAIRS} paired samples; {ADDITIONS} additions/sample. Descriptive comparison, no significance claim.</text>',
+        f'<text x="440" y="287" text-anchor="middle" font-size="12">{current_label}</text>',
+        f'<text x="48" y="319" font-size="11">{PAIRS} paired samples; {ADDITIONS} {workload}/sample. Descriptive comparison, no significance claim.</text>',
         '</g></svg>'])
     svg = "".join(parts)
     (OUTPUT / "review_markup_timings.svg").write_text(svg, encoding="utf-8")

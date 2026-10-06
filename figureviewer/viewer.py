@@ -2662,6 +2662,7 @@ class ViewerWindow(tk.Toplevel):
         return "break"
 
     def _on_press(self, event) -> None:
+        self.edit.review.cancel_click()
         self.canvas.focus_set()
         if self._minimap_click(event):
             return
@@ -2676,6 +2677,7 @@ class ViewerWindow(tk.Toplevel):
         # A link under the press is remembered (not consumed): only a
         # release without drag on the same link opens it, in _on_release.
         self.links.on_press(event)
+        self.edit.review.on_press(event)
         # A press on text starts a selection; on blank page it falls
         # through to panning, so the reading gesture is unchanged.
         if self.text.on_press(event):
@@ -2684,6 +2686,7 @@ class ViewerWindow(tk.Toplevel):
         self.canvas.configure(cursor="fleur")
 
     def _on_drag(self, event) -> None:
+        self.edit.review.cancel_click()
         if self.edit.on_drag(event):
             return
         if self._snip_start is not None:
@@ -2710,7 +2713,10 @@ class ViewerWindow(tk.Toplevel):
         if not self.text.on_release(event):
             self._end_pan()
         if clicked is not None:
+            self.edit.review.cancel_click()
             self.links.open(clicked)
+        else:
+            self.edit.review.on_release(event)
 
     def _end_pan(self) -> None:
         self._pan_anchor = None
