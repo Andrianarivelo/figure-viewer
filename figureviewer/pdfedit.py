@@ -34,6 +34,7 @@ from __future__ import annotations
 import threading
 import uuid
 import zlib
+from datetime import datetime, timezone
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Callable, Iterator, Optional, Sequence
@@ -97,6 +98,8 @@ class AnnotInfo:
     contents: str
     subject: str = ""
     author: str = ""
+    parent_uid: str = ""
+    created: str = ""
 
 
 class EditableVectorDocument(D.VectorDocument):
@@ -653,7 +656,8 @@ class EditSession:
             return TYPE_LINE
         return mapping.get(code, TYPE_OTHER)
 
-    def _info(self, page: int, annot) -> AnnotInfo:
+    def _info(self, page: int, annot, *,
+              page_xrefs: Optional[set[int]] = None) -> AnnotInfo:
         rect = annot.rect
         metadata = annot.info or {}
         return AnnotInfo(
@@ -663,23 +667,65 @@ class EditSession:
             contents=metadata.get("content", ""),
             subject=metadata.get("subject", ""),
             author=metadata.get("title", ""),
+            parent_uid=self._reply_parent_uid(page, annot, page_xrefs=page_xrefs),
+            created=metadata.get("creationDate", ""),
         )
+
+    def _reply_parent_uid(self, page: int, annot, *,
+                          page_xrefs: Optional[set[int]] = None) -> str:
+        """Resolve standard /IRT without assigning names to imported objects.
+
+        /RT /Group denotes grouped markup rather than a conversation reply.
+        Missing or off-page references are kept as ordinary root comments so
+        malformed imported PDFs do not hide otherwise readable annotations.
+        """
+        doc = self.document._doc
+        if doc.xref_get_key(annot.xref, "RT") == ("name", "/Group"):
+            return ""
+        kind, value = doc.xref_get_key(annot.xref, "IRT")
+        if kind != "xref":
+            return ""
+        try:
+            parent_xref = int(value.split()[0])
+        except (ValueError, IndexError):
+            return ""
+        if parent_xref == annot.xref:
+            return ""
+        if page_xrefs is None:
+            page_xrefs = {a.xref for a in annot.parent.annots() or ()}
+        if parent_xref not in page_xrefs:
+            return ""
+        name_kind, name = doc.xref_get_key(parent_xref, "NM")
+        return name if name_kind == "string" and name else f"xref:{parent_xref}"
 
     def annots_on(self, page: int) -> list[AnnotInfo]:
         with self.document._lock:
-            return [self._info(page, a) for a in self._page(page).annots() or ()]
+            target = self._page(page)
+            # Build membership once for the page. Each reply then resolves
+            # its parent in constant time, even in a long discussion.
+            annotations = list(target.annots() or ())
+            page_xrefs = {a.xref for a in annotations}
+            return [self._info(page, a, page_xrefs=page_xrefs)
+                    for a in annotations]
 
     def hit_test(self, page: int, point_pts: tuple[float, float],
                  tolerance: float = 3.0) -> Optional[AnnotInfo]:
         """Topmost annotation under a page point, in PDF points."""
         x, y = point_pts
         with self.document._lock:
+            target = self._page(page)
+            annotations = list(target.annots() or ())
+            page_xrefs = {a.xref for a in annotations}
             hits = []
-            for annot in self._page(page).annots() or ():
+            for annot in annotations:
+                # Replies belong in the thread; their invisible note geometry
+                # must never steal selection from a visible page annotation.
+                if self._reply_parent_uid(page, annot, page_xrefs=page_xrefs):
+                    continue
                 r = annot.rect
                 if (r.x0 - tolerance <= x <= r.x1 + tolerance
                         and r.y0 - tolerance <= y <= r.y1 + tolerance):
-                    hits.append(self._info(page, annot))
+                    hits.append(self._info(page, annot, page_xrefs=page_xrefs))
             return hits[-1] if hits else None
 
     # -- annotation mutators ----------------------------------------------
@@ -747,6 +793,46 @@ class EditSession:
             session._tag_annot(annot, uid)
 
         self._execute(AddAnnotCommand(page, uid, "Add note", build))
+        return uid
+
+    def add_reply(self, page: int, parent_uid: str, contents: str,
+                  author: str = "") -> str:
+        """Add an interoperable PDF reply as one undoable annotation command.
+
+        Resolve the parent again on redo because its xref can change after
+        undoing and recreating it. Capture the creation date once, so redo
+        retains the original message identity and timestamp. Only whitespace
+        around a reply is removed; its internal formatting is preserved.
+        """
+        if not isinstance(contents, str) or not contents.strip():
+            raise ValueError("A reply cannot be empty")
+        contents = contents.strip()
+        uid = uuid.uuid4().hex
+        created = datetime.now(timezone.utc).strftime("D:%Y%m%d%H%M%SZ")
+
+        def build(session: "EditSession") -> None:
+            target, parent = session._locate(page, parent_uid)
+            if parent is None:
+                raise LookupError(f"annotation {parent_uid} vanished from page {page}")
+            parent_xref = parent.xref
+            origin = parent.rect.top_left
+            annot = target.add_text_annot(origin, contents, icon="Comment")
+            try:
+                annot.set_info(content=contents, title=author,
+                               creationDate=created, modDate=created)
+                # Suppress only the page appearance. Hidden can suppress
+                # reader interaction too; no Print flag avoids paper icons.
+                annot.set_flags(D.fitz.PDF_ANNOT_IS_NO_VIEW)
+                annot.update()
+                session._tag_annot(annot, uid)
+                annot.set_irt_xref(parent_xref)
+                session.document._doc.xref_set_key(annot.xref, "RT", "/R")
+            except BaseException:
+                # Keep failed commands out of the document as well as history.
+                target.delete_annot(annot)
+                raise
+
+        self._execute(AddAnnotCommand(page, uid, "Reply to comment", build))
         return uid
 
     def add_ink(self, page: int, strokes: Sequence[Sequence[tuple[float, float]]],
@@ -881,6 +967,18 @@ class EditSession:
 
             info = self._read_props(annot)
             meta = dict(annot.info or {})
+            doc = self.document._doc
+            old_xref = annot.xref
+            incoming = [xref for xref, *_ in target.annot_xrefs()
+                        if doc.xref_get_key(xref, "IRT") ==
+                        ("xref", f"{old_xref} 0 R")]
+            own_parent = doc.xref_get_key(old_xref, "IRT")
+            own_reply_type = doc.xref_get_key(old_xref, "RT")
+            # MuPDF deletes linked replies along with their parent. Detach
+            # direct children while replacing this geometry, then reconnect
+            # them to its fresh xref, leaving every message intact.
+            for xref in incoming:
+                doc.xref_set_key(xref, "IRT", "null")
             if kind == TYPE_INK:
                 # annot.vertices for ink is a list of stroke point lists.
                 strokes = [[remap(p) for p in stroke] for stroke in annot.vertices]
@@ -904,6 +1002,12 @@ class EditSession:
             self._copy_meta(fresh, info, meta)
             fresh.update()
             self._tag_annot(fresh, uid)
+            for xref in incoming:
+                doc.xref_set_key(xref, "IRT", f"{fresh.xref} 0 R")
+            if own_parent[0] == "xref":
+                doc.xref_set_key(fresh.xref, "IRT", own_parent[1])
+            if own_reply_type[0] == "name":
+                doc.xref_set_key(fresh.xref, "RT", own_reply_type[1])
         else:
             annot.set_rect(new_rect)
             annot.update()
@@ -939,12 +1043,30 @@ class EditSession:
         self._execute(MoveResizeAnnotCommand(page, uid, old, tuple(new_rect_pts)))
 
     def delete_annot(self, page: int, uid: str) -> None:
-        """Snapshot-based delete: byte-perfect undo for every annot type."""
+        """Delete a comment and its descendants in one reversible snapshot.
+
+        MuPDF may delete replies implicitly when deleting their parent. Work
+        backwards through the discovered descendants and tolerate those
+        already removed, preserving independent conversations on the page.
+        """
         def mutate() -> None:
             target, annot = self._locate(page, uid)
             if annot is None:
                 raise LookupError(f"annotation {uid} vanished from page {page}")
-            target.delete_annot(annot)
+            infos = self.annots_on(page)
+            descendants = [uid]
+            selected = {uid}
+            while True:
+                added = [info.uid for info in infos
+                         if info.parent_uid in selected and info.uid not in selected]
+                if not added:
+                    break
+                descendants.extend(added)
+                selected.update(added)
+            for descendant in reversed(descendants):
+                target, annot = self._locate(page, descendant)
+                if annot is not None:
+                    target.delete_annot(annot)
 
         self._execute(SnapshotCommand("Delete annotation", mutate))
 

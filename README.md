@@ -31,6 +31,20 @@ directly in the Review pane. Imported PDF comments are supported, including
 the author's name when present. The full comment preview scrolls and supports
 selecting and copying text. Dragging across commented text still selects text.
 
+The Review pane groups comments and their replies into conversations. Drag the
+divider to adjust the space for the list and conversation. Search includes
+replies and author names, while keeping the original comment visible for context.
+Select a comment or reply, click **Reply**, enter your name and response, then
+click **Post reply** (or **Ctrl+Enter**). Replies remain unsaved until **Save PDF**;
+Undo and Redo also apply to replies. On short windows the composer temporarily
+hides the comment list to leave room for the conversation. Cancel restores it
+and keeps your draft in memory. Drafts are not saved across app restarts.
+
+Replies use native PDF thread relationships, with author and creation date.
+Editing a reply preserves its author; deleting a thread removes its replies in
+one undoable step. The CSV export includes author, comment ID, parent ID and
+creation date alongside the original page/type/quote/comment columns.
+
 Shortcuts: **Ctrl+Alt+H** highlights, **Ctrl+Alt+M** comments, and
 **Ctrl+Alt+R** toggles the review pane. The selection context menu offers the
 same actions. **Ctrl+Z / Ctrl+Y** undo and redo, including the entire creation of

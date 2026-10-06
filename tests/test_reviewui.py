@@ -216,7 +216,9 @@ class ReviewUITests(unittest.TestCase):
             with exported.open(encoding="utf-8-sig", newline="") as stream:
                 records = list(csv.DictReader(stream))
             self.assertEqual(records, [{"page": "1", "type": "highlight",
-                                       "quote": quote, "comment": "'" + changed}])
+                                       "quote": quote, "comment": "'" + changed,
+                                       "author": "", "id": info.uid,
+                                       "parent_id": "", "created": ""}])
             review.delete_selected()
             self.indexed(application, review, 0)
             window.edit.undo()
@@ -387,6 +389,168 @@ class ReviewUITests(unittest.TestCase):
                                                   (box[1] + box[3]) / 2)
             self.assertAlmostEqual(point[0], (info.rect[0] + info.rect[2]) / 2, places=3)
             self.assertAlmostEqual(point[1], (info.rect[1] + info.rect[3]) / 2, places=3)
+
+
+    def test_inline_reply_thread_search_edit_undo_save_and_export(self):
+        """Exercise the real composer against an imported PDF comment."""
+        with self.viewer(comment="Please explain the method") as (application, window, path):
+            original = path.read_bytes()
+            review = window.edit.review
+            review.open_panel()
+            self.indexed(application, review, 1)
+            root = review.rows[0]
+            root_key = review._key(root)
+            review.tree.selection_set(root_key)
+            review._selected()
+            review.reply_button.invoke()
+            self.assertTrue(review.composer.winfo_manager())
+            review.author.set("Réviseur α")
+            comment = "We added the requested control.\nUnicode 中文 🧠"
+            review.reply_text.insert("1.0", comment)
+            review.post_button.invoke()
+            self.indexed(application, review, 2)
+            reply = review.selected_info()
+            self.assertIsNotNone(reply)
+            self.assertEqual((reply.parent_uid, reply.contents, reply.author),
+                             (root.uid, comment, "Réviseur α"))
+            self.assertEqual(review.tree.parent(review._key(reply)), root_key)
+            self.assertFalse(review.composer.winfo_manager())
+            preview = review.preview.get("1.0", "end-1c")
+            self.assertIn(root.contents, preview)
+            self.assertIn(comment, preview)
+            review.query.set("requested control")
+            self.assertEqual(review.tree.get_children(), (root_key,))
+            self.assertEqual(review.tree.get_children(root_key), (review._key(reply),))
+            changed = "Updated reply text"
+            with mock.patch.object(R.DLG, "ask_text", return_value=changed):
+                review.edit_comment()
+            self.indexed(application, review, 2)
+            # Editing changes the search match; clearing the query restores
+            # the conversation and preserves the original author metadata.
+            review.query.set("")
+            review.tree.selection_set(review._key(reply))
+            self.assertEqual(review.selected_info().author, reply.author)
+            window.edit.undo()
+            self.indexed(application, review, 2)
+            window.edit.undo()
+            self.indexed(application, review, 1)
+            window.edit.redo()
+            self.indexed(application, review, 2)
+            exported = path.with_suffix(".csv")
+            with mock.patch.object(R.filedialog, "asksaveasfilename", return_value=str(exported)):
+                review.export_csv()
+            with exported.open(encoding="utf-8-sig", newline="") as stream:
+                records = list(csv.DictReader(stream))
+            self.assertEqual(len(records), 2)
+            self.assertEqual(records[1]["parent_id"], root.uid)
+            self.assertEqual(records[1]["comment"], comment)
+            self.assertEqual(path.read_bytes(), original)
+            self.assertTrue(window.edit.save(synchronous=True))
+            with D.fitz.open(path) as reopened:
+                page = reopened[0]
+                parent, saved_reply = list(page.annots())
+                self.assertEqual(saved_reply.irt_xref, parent.xref)
+                self.assertEqual(saved_reply.info["content"], comment)
+
+    def test_reply_drafts_survive_selection_refresh_and_close(self):
+        """Drafts are per-message and survive undo-driven asynchronous refresh."""
+        with self.viewer(comment="First thread") as (application, window, _path):
+            review = window.edit.review
+            review.open_panel()
+            self.indexed(application, review, 1)
+            first = review.rows[0]
+            second_uid = window.edit.session.add_note(0, (250, 200), "Second thread")
+            self.indexed(application, review, 2)
+            first_key, second_key = review._key(first), f"0:{second_uid}"
+            review.tree.selection_set(first_key)
+            review._selected()
+            review.start_reply()
+            review.reply_text.insert("1.0", "First draft")
+            review.tree.selection_set(second_key)
+            review._selected()
+            self.assertEqual(review.reply_text.get("1.0", "end-1c"), "")
+            review.reply_text.insert("1.0", "Second draft")
+            review.tree.selection_set(first_key)
+            review._selected()
+            self.assertEqual(review.reply_text.get("1.0", "end-1c"), "First draft")
+            review.refresh()
+            self.indexed(application, review, 2)
+            self.assertEqual(review.reply_text.get("1.0", "end-1c"), "First draft")
+            review.close_panel()
+            review.open_panel()
+            self.indexed(application, review, 2)
+            review.tree.selection_set(second_key)
+            review._selected()
+            review.start_reply()
+            self.assertEqual(review.reply_text.get("1.0", "end-1c"), "Second draft")
+            review.cancel_reply()
+            self.assertFalse(review.composer.winfo_manager())
+
+    def test_empty_reply_and_failed_reply_keep_document_and_draft(self):
+        """Validation and failed operations must not erase a composed response."""
+        with self.viewer(comment="Root comment") as (application, window, _path):
+            review = window.edit.review
+            review.open_panel()
+            self.indexed(application, review, 1)
+            review.tree.selection_set(review.tree.get_children()[0])
+            review._selected()
+            review.start_reply()
+            review.reply_text.insert("1.0", " \n ")
+            review.post_reply()
+            self.assertFalse(window.edit.session.dirty)
+            review.reply_text.delete("1.0", "end")
+            review.reply_text.insert("1.0", "Keep this draft")
+            with mock.patch.object(window.edit.session, "add_reply", side_effect=RuntimeError("failed")), \
+                    mock.patch.object(R.messagebox, "showerror"):
+                review.post_reply()
+            self.assertEqual(review.reply_text.get("1.0", "end-1c"), "Keep this draft")
+            self.assertFalse(window.edit.session.dirty)
+
+    def test_theme_rebuild_keeps_reply_draft_in_memory(self):
+        """A palette change rebuilds widgets without losing unpublished text."""
+        with self.viewer(comment="Root comment") as (application, window, _path):
+            review = window.edit.review
+            review.open_panel()
+            self.indexed(application, review, 1)
+            key = review.tree.get_children()[0]
+            review.tree.selection_set(key)
+            review._selected()
+            review.start_reply()
+            review.reply_text.insert("1.0", "Draft before switching theme")
+            application.toggle_theme()
+            replacement = application.windows[0]
+            self._wait(application, lambda: replacement.document is not None)
+            review = replacement.edit.review
+            review.open_panel()
+            self.indexed(application, review, 1)
+            review.tree.selection_set(key)
+            review._selected()
+            review.start_reply()
+            self.assertEqual(review.reply_text.get("1.0", "end-1c"), "Draft before switching theme")
+
+    def test_nested_thread_delete_and_root_navigation(self):
+        """Nested replies stay grouped, navigate to the root and delete atomically."""
+        with self.viewer(comment="Root comment") as (application, window, _path):
+            review = window.edit.review
+            review.open_panel()
+            self.indexed(application, review, 1)
+            root = review.rows[0]
+            session = window.edit.session
+            first = session.add_reply(0, root.uid, "First reply", "Reviewer A")
+            second = session.add_reply(0, first, "Nested reply", "Reviewer B")
+            self.indexed(application, review, 3)
+            root_key = review._key(root)
+            self.assertEqual(len(review.tree.get_children(root_key)), 2)
+            review.tree.selection_set(f"0:{second}")
+            review._selected()
+            self.assertEqual(window.edit._selected_uid, root.uid)
+            review.tree.selection_set(root_key)
+            review._selected()
+            self.assertEqual(review.delete_button.cget("text"), "Delete thread")
+            review.delete_button.invoke()
+            self.indexed(application, review, 0)
+            window.edit.undo()
+            self.indexed(application, review, 3)
 
 
 if __name__ == "__main__":

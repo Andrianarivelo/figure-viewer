@@ -108,6 +108,7 @@ DEFAULT_SETTINGS: dict = {
         "note_icon": "Comment",
     },
     "edit_recent_colors": [],
+    "review_author": "",
     # Signature metadata only; the PNG strokes live as files under
     # SETTINGS_DIR/signatures so settings.json stays small.
     "signature_library": [],
@@ -724,6 +725,7 @@ class App:
                   w.geometry())
                  for w in list(self.windows)]
         for window in list(self.windows):
+            window.edit.review._store_draft()
             window._destroyed = True
             try:
                 window._stop_video_session()
