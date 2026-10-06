@@ -996,6 +996,9 @@ class ViewerWindow(tk.Toplevel):
                                   command=self._sidebar_auto_hide_changed)
         view_menu.add_checkbutton(label="Details Panel", accelerator="Ctrl+I", variable=self.show_info,
                                   command=self._apply_layout)
+        view_menu.add_checkbutton(label="Review Panel", accelerator="Ctrl+Alt+R",
+                                  variable=self.edit.review.visible,
+                                  command=self.edit.review.visibility_changed)
         view_menu.add_checkbutton(label="Index Panel (when the PDF has one)",
                                   accelerator="Ctrl+Shift+I",
                                   variable=self.index.show_index,

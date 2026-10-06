@@ -34,9 +34,16 @@ selecting and copying text. Dragging across commented text still selects text.
 The Review pane groups comments and their replies into conversations. Drag the
 divider to adjust the space for the list and conversation. Search includes
 replies and author names, while keeping the original comment visible for context.
+Open or close it using **View > Review Panel**, the toolbar, or **Ctrl+Alt+R**.
+Comment states use **blue for Unseen**, **gray for Read**, and **green for Replied**,
+with text labels and a color legend. Viewing a conversation marks its messages
+read; new or edited messages turn it unseen again. A read conversation containing
+replies is marked Replied. Read tracking is saved locally and does not modify the PDF.
+
 Select a comment or reply, click **Reply**, enter your name and response, then
-click **Post reply** (or **Ctrl+Enter**). Replies remain unsaved until **Save PDF**;
-Undo and Redo also apply to replies. On short windows the composer temporarily
+click **Post reply** (or **Ctrl+Enter**). You can also right-click a message and
+choose **Reply**. Replies remain unsaved until **Save PDF**; Undo and Redo also
+apply to replies. On short windows the composer temporarily
 hides the comment list to leave room for the conversation. Cancel restores it
 and keeps your draft in memory. Drafts are not saved across app restarts.
 
@@ -52,7 +59,8 @@ a highlight with its comment in one step. **Ctrl+S** or **Save PDF** writes
 standard PDF annotations to disk; changes remain unsaved until then. The quoted
 passage is stored in the annotation's Subject field and the comment in Contents.
 
-These tools are included in the 1.1.0 Windows downloads and the source launcher.
+The latest review pane, replies and state colors are available in the source
+launcher. The 1.1.0 Windows downloads include the earlier review tools.
 
 ---
 

@@ -109,6 +109,7 @@ DEFAULT_SETTINGS: dict = {
     },
     "edit_recent_colors": [],
     "review_author": "",
+    "review_seen": {},
     # Signature metadata only; the PNG strokes live as files under
     # SETTINGS_DIR/signatures so settings.json stays small.
     "signature_library": [],
@@ -199,11 +200,17 @@ def load_settings() -> dict:
             merged.update(values[key])
         values[key] = merged
     for key in ("active_signature", "active_identity", "sign_certificate_path",
-                "ocr_language", "ocr_variant"):
+                "ocr_language", "ocr_variant", "review_author"):
         if not isinstance(values.get(key), str):
             values[key] = DEFAULT_SETTINGS[key]
     if values["ocr_variant"] not in ("fast", "best"):
         values["ocr_variant"] = DEFAULT_SETTINGS["ocr_variant"]
+    seen = values.get("review_seen")
+    values["review_seen"] = {
+        path: {key: fingerprint for key, fingerprint in messages.items()
+               if isinstance(key, str) and isinstance(fingerprint, str)}
+        for path, messages in (seen.items() if isinstance(seen, dict) else ())
+        if isinstance(path, str) and isinstance(messages, dict)}
     if values.get("open_fit") not in ("optimal", "width", "page", "reading"):
         values["open_fit"] = DEFAULT_SETTINGS["open_fit"]
     try:

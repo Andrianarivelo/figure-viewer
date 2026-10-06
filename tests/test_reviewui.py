@@ -553,5 +553,68 @@ class ReviewUITests(unittest.TestCase):
             self.indexed(application, review, 3)
 
 
+    def test_view_menu_review_checkmark_and_reply_access(self):
+        """The real View checkbutton opens/closes the pane and exposes Reply."""
+        with self.viewer(comment="Review this passage") as (application, window, _path):
+            review = window.edit.review
+            menu = window.menubar.menus["View"]
+            index = next(i for i in range(menu.index("end") + 1)
+                         if menu.type(i) != "separator"
+                         and menu.entrycget(i, "label") == "Review Panel")
+            self.assertEqual(menu.type(index), "checkbutton")
+            self.assertEqual(menu.entrycget(index, "accelerator"), "Ctrl+Alt+R")
+            menu.invoke(index)
+            self.indexed(application, review, 1)
+            self.assertTrue(review.visible.get())
+            review.close_panel()
+            self.assertFalse(review.visible.get())
+            menu.invoke(index)
+            self.indexed(application, review, 1)
+            review.tree.selection_set(review.tree.get_children()[0])
+            review._selected()
+            review.reply_button.invoke()
+            self.assertTrue(review.composer.winfo_manager())
+            menu.invoke(index)
+            self.assertFalse(review.visible.get())
+            self.assertFalse(review.panel.winfo_manager())
+
+    def test_unseen_read_replied_colors_and_new_reply_priority(self):
+        """New or edited messages become unseen without changing raw PDF bytes."""
+        with self.viewer(comment="Original comment") as (application, window, path):
+            original = path.read_bytes()
+            review = window.edit.review
+            review.open_panel()
+            self.indexed(application, review, 1)
+            root = review.rows[0]
+            root_key = review._key(root)
+            self.assertEqual(review.thread_state(root_key), "Unseen")
+            self.assertEqual(review.tree.item(root_key, "tags"), ("Unseen",))
+            review.tree.selection_set(root_key)
+            review._selected()
+            self.assertEqual(review.thread_state(root_key), "Read")
+            self.assertFalse(window.edit.session.dirty)
+            from figureviewer import app as app_module
+            saved = app_module.load_settings()
+            self.assertEqual(saved["review_seen"], application.settings["review_seen"])
+            # Make the thread inactive before a new reply arrives.
+            review.tree.selection_remove(root_key)
+            reply = window.edit.session.add_reply(0, root.uid, "First response", "Reviewer")
+            self.indexed(application, review, 2)
+            self.assertEqual(review.thread_state(root_key), "Unseen")
+            review.tree.selection_set(root_key)
+            review._selected()
+            self.assertEqual(review.thread_state(root_key), "Replied")
+            self.assertEqual(review.tree.item(root_key, "tags"), ("Replied",))
+            review.tree.selection_remove(root_key)
+            window.edit.session.set_annot_props(0, reply, contents="Changed response")
+            self.indexed(application, review, 2)
+            self.assertEqual(review.thread_state(root_key), "Unseen")
+            review.tree.selection_set(f"0:{reply}")
+            review._selected()
+            self.assertEqual(review.thread_state(root_key), "Replied")
+            self.assertEqual(len(set(review.state_colors.values())), 3)
+            self.assertEqual(path.read_bytes(), original)
+
+
 if __name__ == "__main__":
     unittest.main()

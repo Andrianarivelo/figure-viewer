@@ -7,13 +7,16 @@ list is indexed in small Tk batches and never performs a full scan per keystroke
 from __future__ import annotations
 
 import csv
+import hashlib
+import json
+import os
 from datetime import datetime
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from . import dialogs as DLG
 from . import docs as D
-from .theme import bind_tooltip, toolbar_button
+from .theme import bind_tooltip, style_menu, toolbar_button
 
 # User-facing defaults and layout settings live together for easy adjustment.
 REVIEW_WIDTH = 410
@@ -34,6 +37,7 @@ class ReviewController:
         self.window = edit.window
         self.palette = edit.palette
         self.mode = tk.StringVar(master=self.window, value="")
+        self.visible = tk.BooleanVar(master=self.window, value=False)
         self.query = tk.StringVar(master=self.window)
         self.kind = tk.StringVar(master=self.window, value="All")
         self.panel = None
@@ -46,6 +50,9 @@ class ReviewController:
         self._press = None
         self._threads = {}
         self._roots = {}
+        self._fingerprints = {}
+        self._seen_document = None
+        self._seen_path = ""
         # App-owned transient drafts survive window/theme rebuilds, but are
         # intentionally never written to settings or the PDF until posted.
         if not hasattr(edit.app, "review_drafts"):
@@ -222,15 +229,25 @@ class ReviewController:
     def open_panel(self):
         """The panel shares the edit session and its save/undo history."""
         if not self.edit._ensure_session():
+            self.visible.set(False)
             return
         if self.panel is None:
             self._build_panel()
         self.panel.grid(row=0, column=1, rowspan=2, sticky="nsew")
+        self.visible.set(True)
         self.refresh()
+
+    def visibility_changed(self):
+        """Apply the View menu checkbutton using the same panel lifecycle."""
+        if self.visible.get():
+            self.open_panel()
+        else:
+            self.close_panel()
 
     def close_panel(self):
         """Cancel indexing when hidden or while changing documents."""
         self._store_draft()
+        self.visible.set(False)
         self._reply_target = None
         if self.panel is not None:
             self.composer.grid_remove()
@@ -299,6 +316,17 @@ class ReviewController:
         self.tree.configure(yscrollcommand=scroll.set)
         self.tree.bind("<<TreeviewSelect>>", self._selected)
         self.tree.bind("<Double-1>", lambda _e: self.edit_comment())
+        self.tree.bind("<Button-3>", self._comment_context)
+        self.state_colors = {"Unseen": p.accent, "Read": p.muted, "Replied": p.ok}
+        for state, color in self.state_colors.items():
+            self.tree.tag_configure(state, foreground=color)
+        legend = ttk.Frame(listing)
+        legend.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        for state, color in self.state_colors.items():
+            tk.Label(legend, text="● " + state, foreground=color, background=p.panel,
+                     font="FVsmall").pack(side="left", padx=(0, 12))
+        bind_tooltip(legend, "Unseen: new or changed messages. Read: viewed comment. "
+                     "Replied: viewed conversation with replies.", p)
         self.split.add(listing, weight=1)
         preview_frame = ttk.Frame(self.split)
         preview_frame.columnconfigure(0, weight=1)
@@ -322,6 +350,7 @@ class ReviewController:
         actions.grid(row=4, column=0, sticky="ew", pady=8)
         self.reply_button = ttk.Button(actions, text="Reply", command=self.start_reply)
         self.reply_button.pack(side="left", padx=(0, 4))
+        bind_tooltip(self.reply_button, "Reply to the selected comment or message (Ctrl+Enter to post).", p)
         self.edit_button = ttk.Button(actions, text="Edit", command=self.edit_comment)
         self.edit_button.pack(side="left", padx=(0, 4))
         self.delete_button = ttk.Button(actions, text="Delete", command=self.delete_selected)
@@ -330,7 +359,6 @@ class ReviewController:
         more = ttk.Menubutton(actions, text="More")
         more.pack(side="right")
         menu = tk.Menu(more, tearoff=False)
-        from .theme import style_menu
         style_menu(menu, p)
         color_menu = tk.Menu(menu, tearoff=False)
         style_menu(color_menu, p)
@@ -427,6 +455,13 @@ class ReviewController:
         disappearing from the list or causing unbounded recursion.
         """
         by_key = {self._key(info): info for info in self.rows}
+        # Detect edited messages without writing read flags into the PDF.
+        # Geometry changes alone do not make an existing message unseen.
+        self._fingerprints = {
+            key: hashlib.sha256(json.dumps(
+                (info.contents, info.subject, info.author, info.created),
+                ensure_ascii=False).encode("utf-8")).hexdigest()
+            for key, info in by_key.items()}
         roots = {}
         for key in by_key:
             trail, seen = [], set()
@@ -454,6 +489,56 @@ class ReviewController:
         # Keep the parent first even if a foreign PDF stores replies before it.
         for root, messages in self._threads.items():
             messages.sort(key=lambda info: (self._key(info) != root, info.created, info.xref))
+
+    def _seen_messages(self):
+        """Read states are local preferences scoped by normalized document path."""
+        if self.window.current is None:
+            return {}
+        document = self.window.current.path
+        if document != self._seen_document:
+            self._seen_document = document
+            self._seen_path = os.path.normcase(str(document.resolve()))
+        return self.edit.app.settings.setdefault("review_seen", {}).setdefault(self._seen_path, {})
+
+    def thread_state(self, root):
+        """New messages take priority over a previously replied conversation."""
+        seen = self._seen_messages()
+        messages = self._threads.get(root, [])
+        if any(seen.get(self._key(info)) != self._fingerprints.get(self._key(info))
+               for info in messages):
+            return "Unseen"
+        return "Replied" if len(messages) > 1 else "Read"
+
+    def _mark_thread_read(self, info):
+        """Record displayed messages and persist local preferences immediately."""
+        root = self._roots.get(self._key(info), self._key(info))
+        seen = self._seen_messages()
+        changed = False
+        for message in self._threads.get(root, [info]):
+            key = self._key(message)
+            fingerprint = self._fingerprints.get(key)
+            if fingerprint is not None and seen.get(key) != fingerprint:
+                seen[key] = fingerprint
+                changed = True
+        if changed:
+            from .app import save_settings
+            save_settings(self.edit.app.settings)
+        self._update_thread_states()
+
+    def _update_thread_states(self):
+        """Update colored, labeled rows without rebuilding their selection."""
+        for root, messages in self._threads.items():
+            state = self.thread_state(root)
+            for message in messages:
+                key = self._key(message)
+                if self.tree.exists(key):
+                    self.tree.item(key, tags=(state,))
+            if self.tree.exists(root):
+                info = messages[0]
+                label = (info.contents or info.subject or info.kind).replace("\n", " ")
+                count = len(messages) - 1
+                suffix = f", {count} {'reply' if count == 1 else 'replies'}" if count else ""
+                self.tree.item(root, text=f"[{state}{suffix}] " + label)
 
     def _filter(self):
         """Search whole conversations; reply matches retain their parent context."""
@@ -499,6 +584,7 @@ class ReviewController:
         self.count.configure(text=f"{visible_threads} / {total} threads")
         if self.rows:
             self._restore_key = None
+        self._update_thread_states()
         self._show_preview(self.selected_info())
 
     def selected_info(self):
@@ -578,6 +664,23 @@ class ReviewController:
         self.reply_text.insert("1.0", self._drafts.get(target, ""))
         self.reply_text.edit_reset()
 
+    def _comment_context(self, event):
+        """Expose Reply directly on the message that was right-clicked."""
+        key = self.tree.identify_row(event.y)
+        if not key:
+            return
+        self.tree.selection_set(key)
+        self._selected()
+        menu = tk.Menu(self.tree, tearoff=False)
+        style_menu(menu, self.palette)
+        menu.add_command(label="Reply", command=self.start_reply)
+        menu.add_command(label="Edit comment", command=self.edit_comment)
+        menu.add_command(label="Delete message and replies", command=self.delete_selected)
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
     def start_reply(self):
         """Show an inline composer for the selected comment or nested reply."""
         info = self.selected_info()
@@ -643,6 +746,7 @@ class ReviewController:
         self._show_preview(info)
         if info is None or self.edit.session is None:
             return
+        self._mark_thread_read(info)
         window = self.window
         root = self._roots.get(self._key(info), self._key(info))
         passage = self._threads.get(root, [info])[0]

@@ -59,5 +59,14 @@ class SettingsMigrationTests(unittest.TestCase):
         self.assertEqual(settings["video_frame_step"], 10)
 
 
+    def test_review_read_state_rejects_malformed_preferences(self):
+        """Damaged local review settings cannot crash the comment pane."""
+        settings = self._load({"review_seen": {"file": {"0:id": "hash", "bad": []},
+                                                "invalid": []}, "review_author": None})
+        self.assertEqual(settings["review_seen"], {"file": {"0:id": "hash"}})
+        self.assertEqual(settings["review_author"], "")
+        self.assertEqual(self._load({"review_seen": []})["review_seen"], {})
+
+
 if __name__ == "__main__":
     unittest.main()
