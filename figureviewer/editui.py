@@ -32,6 +32,8 @@ from PIL import Image, ImageTk
 from . import dialogs as DLG
 from . import docs as D
 from . import pdfedit as PE
+from . import textedit as TE
+from .inlinetext import InlineTextEditor
 from .theme import bind_tooltip, toolbar_button
 from .reviewui import ReviewController
 
@@ -97,6 +99,8 @@ class EditController:
         self._pending_ink: list[list[tuple[float, float]]] = []
         self._ink_job: Optional[str] = None
         self._editor: Optional[dict] = None        # open overlay text editor
+        self._inline: Optional[InlineTextEditor] = None   # live text box
+        self._registry: Optional[TE.FontRegistry] = None
         self._placing: Optional[dict] = None       # signature placement
         self._sign_photo: Optional[ImageTk.PhotoImage] = None
         self._find_state: Optional[dict] = None
@@ -613,6 +617,13 @@ class EditController:
 
     # -------------------------------------------------------------- input
     def on_press(self, event) -> bool:
+        if self._inline is not None:
+            # Inside the live text box: caret, selection, move or resize.
+            # Anywhere else: the click places the text and is consumed.
+            if self._inline.press(event):
+                return True
+            self._inline.finish(commit=True)
+            return True
         if self._editor is not None:
             # A click outside an open overlay editor commits it first.
             self.commit_open_editor()
@@ -643,6 +654,8 @@ class EditController:
         return False
 
     def on_drag(self, event) -> bool:
+        if self._inline is not None and self._inline.drag(event):
+            return True
         if self._placing is not None:
             return self._sign_drag(event)
         gesture = self._gesture
@@ -660,6 +673,8 @@ class EditController:
         return True
 
     def on_release(self, event) -> bool:
+        if self._inline is not None and self._inline.release(event):
+            return True
         if self._placing is not None:
             return True
         gesture = self._gesture
@@ -688,9 +703,16 @@ class EditController:
         return True
 
     def on_motion(self, event) -> bool:
-        if not self.active or self.tool_var.get() != "select":
-            return False
-        return False   # hover affordances are handled by the cursor only
+        """Cursor feedback; True while the live text box owns the cursor."""
+        inline = self._inline
+        if inline is not None:
+            cursor = inline.cursor_for(event.x, event.y)
+            self.window.canvas.configure(cursor=cursor or self._tool_cursor())
+            return True
+        if self.active and self.tool_var.get() == "text":
+            self.window.canvas.configure(cursor="xterm")
+            return True
+        return False
 
     def on_delete(self) -> bool:
         if not self.active or self.session is None:
@@ -711,7 +733,7 @@ class EditController:
         if self._gesture is not None:
             self._cancel_gesture()
             return True
-        if self._editor is not None:
+        if self._inline is not None or self._editor is not None:
             self.cancel_open_editor()
             return True
         if self._placing is not None:
@@ -832,6 +854,8 @@ class EditController:
 
     def on_double_click(self, event) -> bool:
         """Double click: edit a free-text annot, or open the reflow editor."""
+        if self._inline is not None and self._inline.double_click(event):
+            return True
         if not self.active or self.session is None:
             return False
         point = self.canvas_to_points(event.x, event.y)
@@ -845,8 +869,12 @@ class EditController:
                                              contents=text)
             return True
         if hit is None:
-            return self._open_reflow_editor(event, point)
+            return self._open_block_editor(event)
         return True
+
+    def on_triple_click(self, event) -> bool:
+        """Triple click inside the live text box selects the paragraph."""
+        return self._inline is not None and self._inline.triple_click(event)
 
     # ------------------------------------------------------------ markups
     def _finish_markup(self, tool, gesture, event) -> None:
@@ -1008,18 +1036,20 @@ class EditController:
 
     # ----------------------------------------------------- overlay editors
     def _open_text_editor(self, gesture, event) -> None:
-        """Free-text tool: click or drag opens a real Text widget overlay."""
+        """Text tool: drag a zone (wrapping box) or click to type.
+
+        A click (no drag) on existing page text edits that text in place,
+        exactly like a double click; a click on blank page starts an
+        auto-width line that grows as you type.
+        """
         sx, sy = gesture["start"]
         dragged = (abs(event.x - sx) >= MIN_DRAG_PX
                    or abs(event.y - sy) >= MIN_DRAG_PX)
-        defaults = self._defaults()
-        size_pt = float(defaults.get("text_size", 11.0))
-        if dragged:
-            rect_pts = self._canvas_rect_to_points(sx, sy, event.x, event.y)
-        else:
-            x0, y0 = self.canvas_to_points(sx, sy)
-            rect_pts = (x0, y0, x0 + 180.0, y0 + size_pt * 2.2)
-        self._spawn_editor(rect_pts, "", kind="freetext")
+        if not self._inline_supported():
+            return
+        if not dragged and self._open_block_editor(event):
+            return
+        self._open_new_text((sx, sy), (event.x, event.y) if dragged else None)
 
     def _spawn_editor(self, rect_pts, initial: str, *, kind: str,
                       payload: Optional[dict] = None) -> None:
@@ -1029,16 +1059,20 @@ class EditController:
         width_px = max(90, int(c0[2] - c0[0]))
         height_px = max(26, int(c0[3] - c0[1]))
         p = self.palette
+        # Paper-coloured, borderless except for a thin accent ring: the field
+        # reads as part of the page rather than a dark bar on top of it.
         text = tk.Text(window.canvas, wrap="word",
-                       background=p.panel_alt, foreground=p.text,
-                       insertbackground=p.text, relief="solid", borderwidth=1,
+                       background="#ffffff", foreground="#111111",
+                       insertbackground="#111111", relief="flat", borderwidth=0,
                        highlightthickness=1, highlightcolor=p.accent,
                        highlightbackground=p.accent, font="FVui",
-                       padx=4, pady=2, undo=True)
+                       padx=3, pady=1, undo=True)
         text.insert("1.0", initial)
+        # Tagged "edit_widget", NOT "edit": every overlay redraw deletes the
+        # "edit" tag, which used to destroy this editor the moment it opened.
         item = window.canvas.create_window(
             c0[0], c0[1], window=text, anchor="nw",
-            width=width_px, height=height_px, tags="edit")
+            width=width_px, height=height_px, tags="edit_widget")
         self._editor = {"widget": text, "item": item, "kind": kind,
                         "rect_pts": rect_pts, "payload": payload or {},
                         "view": (window.scale, window.off_x, window.off_y,
@@ -1046,12 +1080,11 @@ class EditController:
         text.focus_set()
         text.bind("<Control-Return>", lambda _e: (self.commit_open_editor(), "break")[1])
         text.bind("<Escape>", lambda _e: (self.cancel_open_editor(), "break")[1])
-        hint = {"freetext": "Ctrl+Enter places the text, Esc cancels",
-                "reflow": "Ctrl+Enter rewrites the paragraph, Esc cancels",
-                "field": "Ctrl+Enter fills the field, Esc cancels"}[kind]
-        window.toast(hint)
+        window.toast("Ctrl+Enter fills the field, Esc cancels")
 
     def commit_open_editor(self) -> None:
+        if self._inline is not None:
+            self._inline.finish(commit=True)
         editor = self._editor
         if editor is None:
             return
@@ -1065,20 +1098,7 @@ class EditController:
         if self.session is None:
             return
         try:
-            if editor["kind"] == "freetext":
-                if content.strip():
-                    defaults = self._defaults()
-                    self.session.add_free_text(
-                        self._page(), editor["rect_pts"], content,
-                        fontname=str(defaults.get("text_font", "helv")),
-                        fontsize=float(defaults.get("text_size", 11.0)),
-                        color=_hex_to_rgb(defaults.get("text_color", "#1a1a1a")))
-            elif editor["kind"] == "reflow":
-                block = editor["payload"].get("block")
-                original = editor["payload"].get("original", "")
-                if block is not None and content != original:
-                    self._commit_reflow(block, content)
-            elif editor["kind"] == "field":
+            if editor["kind"] == "field":
                 field = editor["payload"].get("field")
                 if field is not None:
                     self.session.set_field_value(
@@ -1088,6 +1108,8 @@ class EditController:
             messagebox.showerror("Edit PDF", str(exc), parent=self.window)
 
     def cancel_open_editor(self) -> None:
+        if self._inline is not None:
+            self._inline.finish(commit=False)
         editor = self._editor
         if editor is None:
             return
@@ -1104,12 +1126,116 @@ class EditController:
         except Exception:
             pass
 
-    # -------------------------------------------------------------- reflow
-    def _open_reflow_editor(self, event, point) -> bool:
+    # ------------------------------------------------- live text editing
+    @property
+    def registry(self) -> TE.FontRegistry:
+        """Shared font registry; the full font scan starts on first use."""
+        if self._registry is None:
+            from . import app as app_module
+            self._registry = TE.shared_registry(
+                app_module.SETTINGS_DIR / "font_index.json")
+            self._registry.start_scan()
+        return self._registry
+
+    def _inline_supported(self) -> bool:
+        """The live editor needs an upright, unflipped view of a PDF page."""
+        window = self.window
+        if self.session is None or self._document() is None:
+            return False
+        if window.rotation % 360 or window.flip_h or window.flip_v:
+            window.toast("Reset the view rotation and flips to edit text")
+            return False
+        return True
+
+    def _new_text_style(self) -> tuple[TE.CharStyle, str]:
+        """Style for a new text box: the last one used, from settings."""
+        defaults = self._defaults()
+        try:
+            size = TE.clamp_size(float(defaults.get("text_size", 11.0)))
+        except (TypeError, ValueError):
+            size = 11.0
+        color = str(defaults.get("text_color", "#1a1a1a"))
+        if not (len(color) == 7 and color.startswith("#")):
+            color = "#1a1a1a"
+        style = TE.CharStyle(
+            family=str(defaults.get("text_family") or "Arial"), size=size,
+            bold=bool(defaults.get("text_bold", False)),
+            italic=bool(defaults.get("text_italic", False)),
+            color=color)
+        align = str(defaults.get("text_align", "left"))
+        return style, (align if align in TE.ALIGNMENTS else "left")
+
+    def _remember_text_style(self, style: TE.CharStyle, align: str) -> None:
+        defaults = self.app.settings.setdefault("annot_defaults", {})
+        defaults.update({"text_family": style.family, "text_size": style.size,
+                         "text_bold": style.bold, "text_italic": style.italic,
+                         "text_color": style.color, "text_align": align})
+        try:
+            from . import app as app_module
+            app_module.save_settings(self.app.settings)
+        except Exception:
+            pass
+
+    def _doc_families(self) -> list[str]:
+        """Font families used on the current page, for the font list."""
+        from . import reflow
+        families: list[str] = []
+        try:
+            for block in reflow.blocks(self._document(), self._page()):
+                for line in block.lines:
+                    for span in line.spans:
+                        family = self.registry.match_pdf_font(span.font, span.flags)[0]
+                        if family not in families:
+                            families.append(family)
+        except Exception:
+            pass
+        return families
+
+    def _open_new_text(self, start, end=None) -> None:
+        """Open a live text box: dragged zone (``end``) or click point."""
+        style, align = self._new_text_style()
+        registry = self.registry
+        face = registry.face(style.family, style.bold, style.italic)
+        sx, sy = start
+        if end is not None:
+            x0, y0, x1, _y1 = self._inline_rect(sx, sy, *end)
+            wrap = max(18.0, x1 - x0)
+        else:
+            x0, y0 = self._inline_point(sx, sy)
+            wrap = None
+        baseline = y0 + face.ascender * style.size
+        # Click-to-type grows from the click point according to alignment.
+        anchor_x = x0
+        model = TE.RichText("", [], base_style=style, align=align)
+        self._inline = InlineTextEditor(
+            self, mode="new", model=model, page=self._page(),
+            anchor=(anchor_x, baseline), registry=registry,
+            on_finish=self._inline_finished, wrap_width=wrap,
+            doc_families=self._doc_families())
+        self.window.toast("Type your text. Ctrl+Enter or click outside to place it, "
+                          "Esc to cancel")
+
+    def _inline_point(self, cx: float, cy: float) -> tuple[float, float]:
+        """Canvas point -> displayed page point (upright view only)."""
+        window = self.window
+        factor = self._factor()
+        return ((window.off_x + cx / window.scale) / factor,
+                (window.off_y + cy / window.scale) / factor)
+
+    def _inline_rect(self, ax, ay, bx, by) -> tuple[float, float, float, float]:
+        x0, y0 = self._inline_point(min(ax, bx), min(ay, by))
+        x1, y1 = self._inline_point(max(ax, bx), max(ay, by))
+        return x0, y0, x1, y1
+
+    def _open_block_editor(self, event) -> bool:
+        """Edit the page text under ``event`` in place. True when opened."""
         from . import reflow
         document = self._document()
         if document is None or self.session is None:
             return False
+        if not self._inline_supported():
+            return False
+        point = self._inline_point(event.x, event.y)
         try:
             block = reflow.hit_block(document, self._page(), point)
         except Exception:
@@ -1119,22 +1245,60 @@ class EditController:
             if reason:
                 self.window.toast(reason)
             return False
-        bbox = tuple(block.bbox) if hasattr(block, "bbox") else None
-        if bbox is None:
+        try:
+            seed = TE.seed_from_block(block, self.registry)
+        except ValueError:
             return False
-        self._spawn_editor(bbox, block.text, kind="reflow",
-                           payload={"block": block, "original": block.text})
+        anchor_x = seed.origin[0]
+        if seed.wrap_width is None and seed.align == "center":
+            anchor_x = (block.bbox[0] + block.bbox[2]) / 2.0
+        elif seed.wrap_width is None and seed.align == "right":
+            anchor_x = block.bbox[2]
+        base = seed.styles[0] if seed.styles else TE.CharStyle()
+        model = TE.RichText(seed.text, seed.styles, base_style=base,
+                            align=seed.align, line_height=seed.line_height)
+        x0, y0, x1, y1 = block.bbox
+        clip = (x0 - 2.0, y0 - 2.0, x1 + 2.0, y1 + 2.0)
+        editor = InlineTextEditor(
+            self, mode="block", model=model, page=self._page(),
+            anchor=(anchor_x, seed.origin[1]), registry=self.registry,
+            on_finish=self._inline_finished, wrap_width=seed.wrap_width,
+            fixed_baselines=seed.fixed_baselines, indents=seed.indents,
+            erase_rects=seed.erase_rects, erase_clip=clip,
+            doc_families=self._doc_families())
+        self._inline = editor
+        model.set_caret(editor.index_at_canvas(event.x, event.y))
+        editor.refresh(relayout=False)
+        if seed.inexact_fonts:
+            self.window.toast("Not installed: " + ", ".join(seed.inexact_fonts[:2])
+                              + ". Showing the closest match")
+        else:
+            self.window.toast("Editing in place. Ctrl+Enter or click outside to "
+                              "apply, Esc to cancel")
         return True
 
-    def _commit_reflow(self, block, new_text: str) -> None:
-        from . import reflow
-        report = reflow.commit_edit(self.session, self._page(), block, new_text)
-        scale = getattr(report, "scale", 1.0)
-        fallback = getattr(report, "font_fallback", None)
-        if scale and scale < 0.999:
-            self.window.toast(f"Text shrunk to {scale * 100:.0f}% to fit")
-        elif fallback:
-            self.window.toast(f"Edited using {fallback}")
+    def _inline_finished(self, editor: InlineTextEditor, commit: bool) -> None:
+        """Commit (or drop) a closed live text box as one undo entry."""
+        if self._inline is editor:
+            self._inline = None
+        try:
+            self.window.canvas.configure(cursor=self._tool_cursor())
+        except tk.TclError:
+            pass
+        if commit and self.session is not None and editor.changed():
+            label = "Edit text" if editor.mode == "block" else "Add text"
+            try:
+                TE.commit_text(self.session, editor.page, editor.layout,
+                               editor.origin(), erase_rects=editor.erase_rects,
+                               label=label)
+            except Exception as exc:
+                messagebox.showerror("Edit PDF", str(exc), parent=self.window)
+            if editor.mode == "new":
+                self._remember_text_style(editor.model.style_at(0)
+                                          if editor.model.text else
+                                          editor.model.base_style,
+                                          editor.model.align)
+        self._redraw_overlay()
 
     # ------------------------------------------------------- form filling
     def _form_fields(self) -> list:
@@ -1816,6 +1980,7 @@ class EditController:
 
     def redo(self) -> None:
         if self.session is not None and self.session.can_redo:
+            self.commit_open_editor()
             label = self.session.redo()
             self.window.toast(label or "Redone")
             self._sync_redact_bar()
@@ -1862,6 +2027,14 @@ class EditController:
         if window.document is None or self.window._video_session is not None:
             return
         p = self.palette
+
+        # The live text box follows pans and zooms; a page change commits it.
+        inline = self._inline
+        if inline is not None:
+            if inline.page != window.page:
+                inline.finish(commit=True)
+            else:
+                inline.refresh(relayout=False)
 
         # Open overlay editor follows the view; a changed view commits it.
         if self._editor is not None:
@@ -2108,9 +2281,13 @@ class EditController:
         self._close_props()
         self._sync_redact_bar()
         self._redraw_overlay()
-        cursor = {"select": "", "ink": "pencil", "text": "xterm",
-                  "note": "hand2"}.get(self.tool_var.get(), "crosshair")
-        self.window.canvas.configure(cursor=cursor)
+        self.window.canvas.configure(cursor=self._tool_cursor())
+
+    def _tool_cursor(self) -> str:
+        if not self.active:
+            return ""
+        return {"select": "", "ink": "pencil", "text": "xterm",
+                "note": "hand2"}.get(self.tool_var.get(), "crosshair")
 
     def set_tool(self, name: str) -> None:
         if self.active:

@@ -271,6 +271,46 @@ matters, use **Open in Default App**.
 
 ---
 
+## What is new: Acrobat-style text editing
+
+**Add text anywhere.** Pick the text tool (`T`), drag a zone on the page and
+type: the text wraps inside the zone. A single click on blank page starts a
+line that grows as you type. A floating format bar opens above the box with
+font family (fonts used in the document first, then every installed font),
+size, **B** / *I* / U, colour swatches and left / centre / right / justify.
+With a selection the format applies to the selection, otherwise to the whole
+box. Drag the dashed frame to move the box, the right handle to change its
+width; `Ctrl+Enter`, **Done** or a click outside places it, `Esc` cancels.
+Your last style is remembered for the next box.
+
+**Edit existing text in place.** Double-click page text (or click it with the
+text tool). The paragraph becomes live, editable text drawn exactly where it
+was, in its own font, size and colour, over the real page background: no
+editing bar, no jump. Arrows, `Ctrl+arrows`, `Home` / `End`, `Shift`
+selection, double / triple click, `Ctrl+A C X V Z Y`, `Ctrl+B I U`,
+`Ctrl+L E R J`, `Ctrl+]` / `Ctrl+[` all work.
+
+How it stays faithful: the live text is drawn by MuPDF with the same layout
+that is later written into the PDF, so what you see is what is saved. Embedded
+subset fonts cannot gain new glyphs, so the matching installed font is used
+(`Calibri` -> `calibri.ttf`, PDF base-14 names -> the same base-14 face) and
+subset on save. Old glyphs are removed with text-only redactions that never
+paint a fill, so coloured panels and figures behind the text survive.
+Benchmark against the previous editor on 30 generated blocks (paired
+Wilcoxon, Holm-corrected): first-line shift after an edit 1.64 pt -> 0 pt,
+unchanged-rewrite pixel difference 33.8 -> 0, original font kept 0 % -> 100 %;
+live preview 1.6 ms per keystroke; commit slower (54 -> 112 ms median) because
+a real font file is embedded. See
+[report](benchmarks/results/inline_text/report.md) and
+[benchmark](benchmarks/benchmark_inline_text.py).
+
+Limits, stated honestly: rotated or vertical text and rotated / flipped views
+are not edited in place; a font that is not installed is shown and written with
+the closest match (the status bar says so); a whole paragraph is rewritten on
+commit, so other PDF readers see the new text as ordinary page content.
+
+---
+
 ## What is new in 3.5: the PDF studio
 
 Press **E** on any PDF (or the **Edit** toolbar toggle) and the viewer becomes
@@ -437,9 +477,9 @@ export throughput is 684 pages/s (text), 45 (Markdown), 37 (Excel), 19
 [statistics](benchmarks/results/pdf_studio_v35_statistics.csv), and
 [reproducible benchmark](benchmarks/benchmark_v35.py).
 
-Where Acrobat still wins, stated honestly: FigView's reflow editor works at
-paragraph level with substituted fonts (embedded subset fonts cannot legally
-gain new glyphs), it has no cloud collaboration, and its OCR has no automatic
+Where Acrobat still wins, stated honestly: FigView edits text one paragraph
+at a time and needs the font installed to match it exactly (embedded subset
+fonts cannot gain new glyphs), it has no cloud collaboration, and its OCR has no automatic
 language detection. Where FigView wins: local-first speed and privacy, free
 export, regex replace, reviewed identity auto-fill, self-managed certificate
 signing, honest atomic saves, and one undo history across every kind of edit.
@@ -746,7 +786,9 @@ figureviewer/
     viewer.py              the viewer window: canvas, view transform, commands
     app.py                 Tk root, settings, window registry, single instance
     pdfedit.py             PDF edit sessions: commands, undo/redo, atomic save
-    reflow.py              paragraph rewriting with reflow, find and replace
+    reflow.py              text block model, find and replace
+    textedit.py            in-place rich text engine: fonts, layout, commits
+    inlinetext.py          live text box on the canvas and its format bar
     forms.py               AcroForm model, identity presets, reviewed auto-fill
     signing.py             signature library, stamping, pyHanko certificates
     ocr.py                 integrated-Tesseract OCR, clean-up, language packs

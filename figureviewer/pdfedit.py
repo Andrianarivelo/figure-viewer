@@ -155,6 +155,13 @@ class EditableVectorDocument(D.VectorDocument):
             return raw
         scratch = D.fitz.open(stream=raw, filetype="pdf")
         try:
+            if getattr(self, "fonts_embedded", False):
+                # In-place text edits embed whole system font files (a full
+                # Calibri is ~800 KB); keep only the glyphs actually used.
+                try:
+                    scratch.subset_fonts()
+                except Exception:
+                    pass
             return scratch.tobytes(garbage=3, deflate=True)
         finally:
             scratch.close()

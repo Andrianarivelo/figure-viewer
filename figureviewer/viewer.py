@@ -1248,12 +1248,31 @@ class ViewerWindow(tk.Toplevel):
         canvas.bind("<Button-3>", self._canvas_context_menu)
         canvas.bind("<Motion>", self._on_motion)
         canvas.bind("<Leave>", lambda e: self._set_probe(""))
-        canvas.bind("<Enter>", lambda e: canvas.focus_set())
+        canvas.bind("<Enter>", self._on_canvas_enter)
 
     def _typing(self) -> bool:
-        """True when a text field has focus, so navigation keys stay literal."""
+        """True when a text field has focus, so navigation keys stay literal.
+
+        The live in-place text editor counts as a text field too: it lives
+        on the canvas itself, so no widget type check could detect it.
+        """
+        if getattr(self.edit, "_inline", None) is not None:
+            return True
         widget = self.focus_get()
         return isinstance(widget, (ttk.Entry, tk.Entry, tk.Text, ttk.Combobox))
+
+    def _on_canvas_enter(self, _event=None) -> None:
+        """Hovering the canvas gives it keyboard focus, except while a field
+        floating on the canvas (the text format bar) is being typed into."""
+        try:
+            widget = self.focus_get()
+        except KeyError:      # focus inside a ttk combobox drop-down list
+            return
+        if (widget is not None and widget is not self.canvas
+                and str(widget).startswith(str(self.canvas))
+                and isinstance(widget, (ttk.Entry, tk.Entry, ttk.Combobox))):
+            return
+        self.canvas.focus_set()
 
     # ------------------------------------------------------------- layout
     def _apply_layout(self) -> None:
@@ -2757,11 +2776,14 @@ class ViewerWindow(tk.Toplevel):
 
     def _on_triple_click(self, event) -> None:
         """Triple click selects a whole line of text; inert elsewhere."""
+        if self.edit.on_triple_click(event):
+            return
         self.text.select_line_at(event)
 
     def _on_motion(self, event) -> None:
-        # A link wins the cursor; otherwise the text layer decides.
-        if not self.links.on_motion(event):
+        # The live text editor owns the cursor while open; otherwise a link
+        # wins the cursor and then the text layer decides.
+        if not self.edit.on_motion(event) and not self.links.on_motion(event):
             self.text.on_motion(event)
         if self.document is None:
             self._set_probe("")

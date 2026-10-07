@@ -105,6 +105,9 @@ DEFAULT_SETTINGS: dict = {
         "ink_color": "#d84343", "ink_width": 1.6,
         "shape_stroke": "#d84343", "shape_fill": "", "shape_width": 1.4,
         "text_font": "helv", "text_size": 11.0, "text_color": "#1a1a1a",
+        # Last style used for "Add text" boxes (restored on the next one).
+        "text_family": "Arial", "text_bold": False, "text_italic": False,
+        "text_align": "left",
         "note_icon": "Comment",
     },
     "edit_recent_colors": [],
@@ -733,6 +736,11 @@ class App:
                  for w in list(self.windows)]
         for window in list(self.windows):
             window.edit.review._store_draft()
+            try:
+                # An open text box is placed, never silently dropped.
+                window.edit.commit_open_editor()
+            except Exception:
+                pass
             window._destroyed = True
             try:
                 window._stop_video_session()

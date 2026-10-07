@@ -1,0 +1,7 @@
+metric,label,n_pairs,previous_median,previous_iqr,new_median,new_iqr,shapiro_p,wilcoxon_W,p,rank_biserial,n_nonzero,p_holm,significance
+origin_shift_pt,First-line shift after edit (pt),30,1.640869140625,1.1734886169433594,0.0,0.0,6.460482076678476e-05,0.0,1.7333066441991056e-06,-1.0,30,6.9332265767964225e-06,***
+noop_pixel_diff,Unchanged rewrite: pixel difference,30,33.76420483997135,11.312364659104826,0.0,0.08269347963899037,0.7907827599777095,0.0,1.862645149230957e-09,-1.0,30,1.1175870895385742e-08,***
+white_fraction,White-box pixels after edit (fraction),30,0.0,0.0,0.0,0.0,nan,nan,1.0,0.0,0,1.0,n.s.
+font_kept,Spans keeping the original font (fraction),30,0.0,0.0,1.0,0.0,nan,0.0,9.633570086430965e-07,1.0,24,4.816785043215482e-06,***
+size_shift_pt,Font size change (pt),30,0.0,0.0,0.0,0.0,nan,nan,1.0,0.0,0,1.0,n.s.
+commit_ms,Commit time (ms),30,53.643899998860434,3.878849991451716,112.21085000579478,63.5950249961752,0.0007897855489389436,34.0,6.917864084243774e-06,0.853763440860215,30,2.0753592252731323e-05,***

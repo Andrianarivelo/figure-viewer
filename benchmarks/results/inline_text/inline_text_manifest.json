@@ -1,0 +1,26 @@
+{
+  "fixture_blocks": 30,
+  "fonts": [
+    "Calibri",
+    "Arial",
+    "Times New Roman",
+    "Georgia",
+    "Helvetica"
+  ],
+  "sizes": [
+    10.0,
+    14.0
+  ],
+  "kinds": [
+    "paragraph",
+    "label",
+    "title"
+  ],
+  "render_dpi": 144,
+  "preview_zoom": 2.0,
+  "preview_repeats": 25,
+  "pymupdf": "1.28.2",
+  "python": "3.13.13",
+  "preview_median_ms": 1.600950003194157,
+  "preview_max_ms": 3.538499993737787
+}
