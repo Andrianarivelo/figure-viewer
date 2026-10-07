@@ -30,6 +30,15 @@ import tkinter as tk
 from pathlib import Path
 from typing import Optional
 
+# Running this file directly (for example, VS Code's "Run Python File") gives
+# it no package context. Route that invocation through the public launcher so
+# relative imports and the normal startup/error handling work as expected.
+if __name__ == "__main__" and not __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from figure_viewer_app import main as launch_main
+
+    raise SystemExit(launch_main())
+
 from . import APP_NAME
 from . import docs as D
 from . import ipc

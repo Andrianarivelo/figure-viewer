@@ -17,6 +17,20 @@ from figureviewer import ipc
 
 
 class StartupTests(unittest.TestCase):
+    def test_package_app_file_routes_through_public_launcher(self):
+        """VS Code's Run Python File can start the package file directly."""
+        project_dir = Path(__file__).resolve().parent.parent
+        script = (
+            "import runpy, figure_viewer_app; "
+            "figure_viewer_app.main = lambda: 0; "
+            "runpy.run_path('figureviewer/app.py', run_name='__main__')"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script], cwd=project_dir,
+            capture_output=True, text=True, timeout=15,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_fragmented_selection_larger_than_one_receive(self):
         """A large Explorer selection survives fragmentation, including UTF-8."""
         payload = {"token": "test", "paths": ["C:/images/é" + str(i) for i in range(6000)]}
